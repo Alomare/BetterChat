@@ -1,0 +1,13 @@
+{
+    "name": "mods/alomare/better_chat",
+    "guid": "b3ffcb44-9d18-4101-8b1b-8c3ff34e0ce9",
+    "displayName": "Better Chat",
+    "entry": "better_chat.lua",
+    "version": "1",
+    "icon": "icon.png",
+    "description": "Plays one of the game's own sounds when another player sends a chat message, and makes the text chat bigger or smaller. Settings in Mod Options Menu (escape menu > MODS).",
+    "requires": [
+        "Bingus Shared Loader v17 or newer",
+        "Mod Options Menu (optional: the settings)"
+    ]
+}
