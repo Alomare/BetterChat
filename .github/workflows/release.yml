@@ -1,0 +1,24 @@
+# Publishes a GitHub release for each new ZIP pushed to releases/ (see .github/scripts/release.py):
+# releases/<Name>-<n>.zip -> tag v<n>, release "<Name> V<n>", notes from CHANGELOG.md's "## V<n>" section.
+# The ZIPs are built locally (python scripts/build.py <Mod> --release in the workspace), since the build needs the
+# workspace's packager and Bingus Shared Loader's archive tools.
+name: Release
+
+on:
+  push:
+    branches: [main]
+    paths: ['releases/*.zip']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Publish new releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/release.py
