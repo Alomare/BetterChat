@@ -2,6 +2,12 @@
 
 Releases are named "Better Chat V&lt;n&gt;" (tag `v<n>`). Each section is that release's notes.
 
+## V4 (2026-10-06)
+
+- Added five louder choices to New Message Sound: Menu Confirm, Menu Back, Action Wheel, Item Purchase and Confirmation Dialog.
+- Removed the Paste (Ctrl+V) setting: paste is always on.
+- Translated the new choices into every game language.
+
 ## V3 (2026-10-06)
 
 - Added Paste (Ctrl+V), on by default: pastes the copied text into the chat while you type.

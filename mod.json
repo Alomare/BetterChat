@@ -3,7 +3,7 @@
     "guid": "b3ffcb44-9d18-4101-8b1b-8c3ff34e0ce9",
     "displayName": "Better Chat",
     "entry": "better_chat.lua",
-    "version": "3",
+    "version": "4",
     "icon": "icon.png",
     "description": "Plays a sound alert when another player sends a chat message, allows changing the text chat's size, adds Ctrl+V paste to the chat, and can translate other players' messages (highly experimental, off by default; only you see the translations). Settings in Mod Options Menu (escape menu > MODS).",
     "requires": [

@@ -5,6 +5,7 @@
 -- - New message sound: when another player's chat line arrives, one of the game's own UI sounds plays, at most once
 --   every 2 seconds. Your own lines and lines from players you muted don't count (the game doesn't store those).
 -- - Chat size: the chat box and its text scale by the size set.
+-- - Paste: Ctrl+V adds the clipboard's text to the chat while you type.
 -- - Chat translation (opt-in, off by default): another player's line is sent to Google Translate's keyless endpoint
 --   (translate.googleapis.com) by Windows' own curl.exe, started without a window; the line goes in through curl's
 --   standard input and the reply comes back through a pipe read every frame, so the game never waits. A line in
@@ -18,13 +19,13 @@
 -- Everything native is found in game.dll by code signatures (first at this build's addresses, else by a search of
 -- its executable sections spread over frames, where a signature must match exactly once), and structure offsets
 -- are read from the matched code. A feature whose code is missing stays off; without the chat ring the mod does
--- nothing.
+-- nothing. The mod never writes game memory.
 -- Status: %LOCALAPPDATA%\CowboyBingus\Helldivers2\Logs\BetterChat_STATUS.log (first line = verdict).
 if rawget(_G, 'BetterChat') then return end
 
 local ffi = require('ffi')
 
-local M = {version = '3', frames = 0, errors = 0}
+local M = {version = '4', frames = 0, errors = 0}
 rawset(_G, 'BetterChat', M)
 
 local loader = rawget(_G, 'CowboyBingusModLoader')
@@ -327,8 +328,11 @@ local RING_SIZE = 64           -- chat history lines (the add-line's index mask 
 local COOLDOWN = 2.0           -- seconds between two message sounds
 local CHECK_EVERY = 0.2        -- seconds between two reads of the chat history
 local MODE_MISSION = 4         -- game mode: 3 ship, 4 mission
--- The sound choice (Mod Options Menu index): the game's own UI sounds, read from the code that plays them; the HUD
--- notices have a value per game mode.
+-- The sound choice (Mod Options Menu index): the game's own UI sounds. The first five are read from the code that
+-- plays them (the HUD notices have a value per game mode). The others are louder sounds given by the game's id for
+-- them, which is the upper half of MurmurHash64A of the sound event's name (the game data maps it to the event), so
+-- it stays the same across game updates; each is in both UI sound banks (ship and missions). An id the game no
+-- longer knows plays nothing.
 local SOUNDS = {
     {},                        -- OFF
     {key = 'choice.joined', sig = 'join_feed', ship = 'join_ship', mission = 'join_mission'},
@@ -336,8 +340,13 @@ local SOUNDS = {
     {key = 'choice.tab', sig = 'tab_button', ship = 'tab_click', mission = 'tab_click'},
     {key = 'choice.subtab', sig = 'button_sounds', ship = 'button_click', mission = 'button_click'},
     {key = 'choice.option', sig = 'option_row', ship = 'option_click', mission = 'option_click'},
+    {key = 'choice.confirm', id = 0x7a69c309},     -- ui_generic_popup_confirm
+    {key = 'choice.back', id = 0x96c8c848},        -- ui_generic_back
+    {key = 'choice.wheel', id = 0x22200946},       -- hud_wheel_social_open
+    {key = 'choice.purchase', id = 0xa1af099e},    -- event name unknown; the loudest short sound in both banks
+    {key = 'choice.dialog', id = 0xd8fc9d33},      -- event name unknown
 }
-local DEFAULTS = {sound = 2, scale = 100, paste = true, translate = false, translate_to = 1, translate_own = false}
+local DEFAULTS = {sound = 2, scale = 100, translate = false, translate_to = 1, translate_own = false}
 local SCALE = {min = 50, max = 200, step = 5}
 local SCALE_EVERY = 30         -- frames between size checks
 local MAX_LOG_LINES = 2000
@@ -610,8 +619,13 @@ local function finish_resolution()
     local sounds = {}
     for i = 2, #SOUNDS do
         local sound = SOUNDS[i]
-        sounds[#sounds + 1] = string.format('%s %s', sound.key:sub(8),
-            code.found[sound.sig] and string.format('0x%08x/0x%08x', V[sound.ship], V[sound.mission]) or 'missing')
+        local label = sound.key:sub(8)
+        if sound.id then
+            sounds[#sounds + 1] = string.format('%s 0x%08x', label, sound.id)
+        else
+            sounds[#sounds + 1] = string.format('%s %s', label,
+                code.found[sound.sig] and string.format('0x%08x/0x%08x', V[sound.ship], V[sound.mission]) or 'missing')
+        end
     end
     note(string.format('Ready: chat = context + 0x%x, ring at +0x%x (stride 0x%x, sender +0x%x); %s; sounds: %s',
                        V.chat, V.ring_first, V.line_stride, V.line_sender, table.concat(list, ', '),
@@ -629,10 +643,12 @@ local scale_dirty = true
 
 local function play(choice, why)
     local sound = SOUNDS[choice]
-    if not (sound and sound.sig and features.sound == true and code.found[sound.sig]) then return false end
+    if not (sound and features.sound == true and (sound.id or (sound.sig and code.found[sound.sig]))) then
+        return false
+    end
     local state = pointer(read(native.base + V.game_state, 8))
     local mode = state and V.mode and read32(state + V.mode)
-    local id = V[mode == MODE_MISSION and sound.mission or sound.ship]
+    local id = sound.id or V[mode == MODE_MISSION and sound.mission or sound.ship]
     if not id then return false end
     fn.play_sound(0, id)
     note(string.format('Sound 0x%08x (%s, mode %s)', id, why, tostring(mode)))
@@ -646,7 +662,6 @@ end
 local SETTERS = {
     sound = function(v) v = math.floor(tonumber(v) or DEFAULTS.sound); return (v >= 1 and v <= #SOUNDS) and v or DEFAULTS.sound end,
     scale = function(v) return clamp(v, SCALE, DEFAULTS.scale) end,
-    paste = function(v) return v ~= false end,
     translate = function(v) return v == true end,
     translate_to = function(v) v = math.floor(tonumber(v) or 1); return (v >= 1 and v <= #TRANSLATE_TO) and v or 1 end,
     translate_own = function(v) return v == true end,
@@ -674,7 +689,6 @@ local function connect_options()
     local specs = {
         {'sound', {type = 'choice', choices = choices, default = DEFAULTS.sound}},
         {'scale', {type = 'slider', min = SCALE.min, max = SCALE.max, step = SCALE.step, default = DEFAULTS.scale}},
-        {'paste', {type = 'toggle', default = true}},
         {'translate', {type = 'toggle', default = false}},
         {'translate_to', {type = 'choice', choices = languages, default = 1}},
         {'translate_own', {type = 'toggle', default = false}},
@@ -1318,7 +1332,7 @@ local function frame(dt)
         last_check = clock
         watch_chat()
     end
-    if features.paste == true and options.paste then paste_step() end
+    if features.paste == true then paste_step() end
     if features.translate == true then
         pump()
         if #translate.show > 0 then show_translations() end
