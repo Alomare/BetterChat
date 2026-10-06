@@ -187,16 +187,18 @@ def run():
     check(status().startswith('OK - watching the chat'), 'status OK: %r' % status().splitlines()[0])
     check(len(f.calls) == 0 and 'Chat history: context 0x20000000, first 0, count 2' in log(),
           'lines already in the history make no sound')
-    # Another player's line: the ship's join notice.
+    # Another player's line: at the next check (every 200 ms), the ship's join notice.
     w.add(OTHER)
-    lua.execute('update(0.016)')
+    lua.execute('update(0.1)')
+    check(len(f.calls) == 0, 'a new line waits for the next check (200 ms)')
+    lua.execute('update(0.15)')
     calls = list(f.calls.values())
     check(calls == ['sound 1327f50 %x' % JOIN_SHIP], "another player's line: the join notice sound: %r" % calls)
     check('Line 2: sender 5555666677778888, 5 bytes' in log(), 'the line is logged without its text')
     # Your own line: nothing (after the cooldown).
     lua.execute('update(3.0)')
     w.add(OWN)
-    lua.execute('update(0.016)')
+    lua.execute('update(0.25)')
     check(len(f.calls) == 1 and '1 new chat line(s), 0 from other players' in log(), 'your own line: no sound')
     # Cooldown: a second line within 2 s is quiet, one after 2 s plays.
     w.add(OTHER)
@@ -206,24 +208,24 @@ def run():
     check(len(f.calls) == 2 and 'Sound skipped (cooldown)' in log(), 'a line within 2 seconds of the sound is quiet')
     lua.execute('update(1.0)')
     w.add(OTHER)
-    lua.execute('update(0.016)')
+    lua.execute('update(0.25)')
     check(len(f.calls) == 3, 'a line 2 seconds after the sound plays it')
     # A full ring: the count stays at 64 and the first index moves.
     lua.execute('update(3.0)')
     while w.count < 64:
         w.add(OWN, push=False)
     w.push_ctx()
-    lua.execute('update(0.016)')
+    lua.execute('update(0.25)')
     check(len(f.calls) == 3, 'filling the ring with your own lines: no sound')
     w.add(OTHER)
-    lua.execute('update(0.016)')
+    lua.execute('update(0.25)')
     check(w.first == 1 and len(f.calls) == 4, 'a full ring (count 64, first index moves): the new line is seen')
     # Missions: the mission's join notice.
     lua.execute('update(3.0)')
     w.mode(4)
     w.push_all()
     w.add(OTHER)
-    lua.execute('update(0.016)')
+    lua.execute('update(0.25)')
     check(list(f.calls.values())[-1] == 'sound 1327f50 %x' % JOIN_MISSION, 'in missions: the mission join notice')
     # A cleared history (count back to 0): new baseline, no sound.
     n = len(f.calls)
@@ -255,19 +257,20 @@ def run():
           and sound.default == 2 and sound.label() == 'New Message Sound' and sound.mod() == 'Better Chat'
           and sound.mod_id == 'alomare.better_chat', 'sound choice: OFF + five game sounds, texts as functions')
     sc = s['alomare.better_chat.scale']
-    check(sc.type == 'slider' and sc.min == 50 and sc.max == 200 and sc.step == 5 and sc.default == 100 and sc.gap
-          and sc.label() == 'Chat Size (%)', 'size slider: 50-200% in steps of 5, 100 by default')
+    check(sc.type == 'slider' and sc.min == 50 and sc.max == 200 and sc.step == 5 and sc.default == 100
+          and not sc.gap          and sc.label() == 'Chat Size (%)', 'size slider: 50-200% in steps of 5, 100 by default')
     w2.add(OTHER)
-    lua2.execute('update(0.016)')
-    check(len(f2.calls) == 0, 'sound OFF: no sound')
+    lua2.execute('update(0.25)')
+    check(len(f2.calls) == 0 and '1 new chat line(s), 1 from other players' in log2(), 'sound OFF: no sound')
     for choice, want, what in ((4, TAB, 'menu tab'), (5, SUBTAB, 'menu subtab'), (6, OPTION, 'option click')):
         f2.calls = lua2.table()
         lua2.execute('fake.changed["alomare.better_chat.sound"](%d)' % choice)
         check(list(f2.calls.values()) == ['sound 1327f50 %x' % want], 'picking %s plays it once (preview)' % what)
     lua2.execute('update(3.0)')
+    f2.calls = lua2.table()
     w2.add(OTHER)
-    lua2.execute('update(0.016)')
-    check(list(f2.calls.values())[-1] == 'sound 1327f50 %x' % OPTION, 'the picked sound plays for new messages')
+    lua2.execute('update(0.25)')
+    check(list(f2.calls.values()) == ['sound 1327f50 %x' % OPTION], 'the picked sound plays for new messages')
     # Size: scaled from the widget's own scale once it is laid out.
     f2.calls = lua2.table()
     lua2.execute('fake.changed["alomare.better_chat.scale"](150); update(0.016)')
@@ -315,7 +318,7 @@ def run():
     lua6.execute('for i = 1, 80 do update(0.016) end')
     log6 = (logdir6 / 'BetterChat.log').read_text(encoding='utf-8')
     w6.add(OTHER)
-    lua6.execute('update(0.016)')
+    lua6.execute('update(0.25)')
     check('tab missing' in log6 and len(w6.f.calls) == 0, 'a missing menu sound plays nothing')
 
     # --- The chat ring's code changed: the mod does nothing.
