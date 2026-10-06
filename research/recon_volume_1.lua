@@ -4,12 +4,15 @@
 -- Quality of life for the game's text chat, each part set in Mod Options Menu (escape menu > MODS, optional):
 -- - New message sound: when another player's chat line arrives, one of the game's own UI sounds plays, at most once
 --   every 2 seconds. Your own lines and lines from players you muted don't count (the game doesn't store those).
+-- - New message volume: that sound, louder or quieter than the game plays it.
 -- - Chat size: the chat box and its text scale by the size set.
 --
 -- How: the chat keeps its last 64 lines in a ring (first index, line count, then 64 lines of sender, time and
 -- text). Every 200 ms the mod reads the ring's first index and count (one small read); when lines were added, it
 -- reads their senders and compares them with the local player's peer id. The sound goes through the game's UI sound
--- function, the size through the game's widget scale setter on the chat widget.
+-- function, the size through the game's widget scale setter on the chat widget. At another volume the mod does what
+-- that sound function does (a new sound source in the game's Wwise world, the event posted on it), with the source's
+-- own level set in between through the engine's Lua API (WwiseWorld.set_dry_environment_for_source).
 -- Everything native is found in game.dll by code signatures (first at this build's addresses, else by a search of
 -- its executable sections spread over frames, where a signature must match exactly once), and structure offsets
 -- are read from the matched code. A feature whose code is missing stays off; without the chat ring the mod does
@@ -19,7 +22,7 @@ if rawget(_G, 'BetterChat') then return end
 
 local ffi = require('ffi')
 
-local M = {version = '2', frames = 0, errors = 0}
+local M = {version = '2-recon-1', frames = 0, errors = 0}
 rawset(_G, 'BetterChat', M)
 
 local loader = rawget(_G, 'CowboyBingusModLoader')
@@ -49,6 +52,8 @@ local SIGS = {
      fields = {option_click = {'u32', {1}}, option_refused = {'u32', {8}}, ui_sound = {'call', {13}, {17}}}},
     {name = 'play_sound', rva = 0x1327f50, text = '48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 48 8B 05 ?? ?? ?? ?? 8B DA 48 8B 0D ?? ?? ?? ?? 48 8B 90 88 02 00 00 48 8B 89 F8 10 00 00 48 8B B0 38 03 00 00',
      fields = {}},
+    {name = 'ui_post', rva = 0x1327f5f, optional = true, text = '48 8B 05 ?? ?? ?? ?? 8B DA 48 8B 0D ?? ?? ?? ?? 48 8B 90 ?? ?? ?? ?? 48 8B 89 ?? ?? ?? ?? 48 8B B0 ?? ?? ?? ?? FF D2 8B CB 48 8B F8 E8 ?? ?? ?? ?? 48 8B 0D ?? ?? ?? ?? 45 33 C9 4C 8B C7 8B D0',
+     fields = {engine = {'rip', {3}, {7}}, game_state = {'rip', {12, 52}, {16, 56}}, make_source = {'u32', {19}}, ui_world = {'u32', {26}}, post_event = {'u32', {33}}, audio_id = {'call', {45}, {49}}}},
     {name = 'set_scale', rva = 0x1447ed0, optional = true, text = '48 89 5C 24 18 48 89 6C 24 20 48 89 54 24 10 56 57 41 57 48 83 EC 20 F3 0F 10 41 14',
      fields = {}},
 }
@@ -322,8 +327,10 @@ local SOUNDS = {
     {key = 'choice.subtab', sig = 'button_sounds', ship = 'button_click', mission = 'button_click'},
     {key = 'choice.option', sig = 'option_row', ship = 'option_click', mission = 'option_click'},
 }
-local DEFAULTS = {sound = 2, scale = 100}
+local DEFAULTS = {sound = 2, volume = 100, layers = false, scale = 100}
+local VOLUME = {min = 25, max = 400, step = 25}
 local SCALE = {min = 50, max = 200, step = 5}
+local NO_SOURCE = 0xffffffff   -- the engine's "no sound source" id
 local SCALE_EVERY = 30         -- frames between size checks
 local MAX_LOG_LINES = 2000
 
@@ -388,6 +395,9 @@ local function init_native()
         ffi.cdef([[
             typedef struct { float x, y; } BetterChatVec2;
             typedef void (*BetterChatSound)(uint64_t unused, uint32_t id);
+            typedef uint32_t (*BetterChatAudioId)(uint32_t id);
+            typedef uint64_t (*BetterChatMakeSource)(uint64_t wwise_world);
+            typedef uint32_t (*BetterChatPost)(uint64_t wwise_world, uint32_t event, uint64_t source, uint64_t unused);
             typedef void (*BetterChatSetVec)(uint64_t widget, BetterChatVec2 value);
             void *better_chat_GetCurrentProcess(void) __asm__("GetCurrentProcess");
             void *better_chat_GetModuleHandleA(const char *name) __asm__("GetModuleHandleA");
@@ -482,6 +492,23 @@ local function finish_resolution()
     if not sound_why and V.ui_sound ~= code.found.play_sound then sound_why = 'the UI sound differs from its calls' end
     if not sound_why then fn.play_sound = ffi.cast('BetterChatSound', base + code.found.play_sound) end
     features.sound = sound_why or true
+    -- The volume: the inside of that sound function (its engine calls and the sound id lookup) and the engine's
+    -- Lua API for a source's level.
+    local volume_why = sound_why or need({'ui_post'}, {'engine', 'make_source', 'ui_world', 'post_event', 'audio_id',
+                                                       'game_state'})
+    if not volume_why and (code.found.ui_post < code.found.play_sound or code.found.ui_post > code.found.play_sound + 0x40) then
+        volume_why = 'the sound source code is not inside the UI sound'
+    end
+    if not volume_why then
+        local S = rawget(_G, 'stingray')
+        local wwise, wwise_world = type(S) == 'table' and S.Wwise, type(S) == 'table' and S.WwiseWorld
+        if not (wwise and wwise.wwise_world and wwise_world and wwise_world.set_dry_environment_for_source
+                and S.Application and S.Application.main_world) then
+            volume_why = 'the engine has no source level function'
+        end
+    end
+    if not volume_why then fn.audio_id = ffi.cast('BetterChatAudioId', base + V.audio_id) end
+    features.volume = volume_why or true
     -- The size: the chat widget inside the HUD and the widget scale setter.
     local scale_why = need({'chat_notice', 'set_scale'}, {'hud', 'chat_hud'})
     if not scale_why then fn.set_scale = ffi.cast('BetterChatSetVec', base + code.found.set_scale) end
@@ -490,7 +517,7 @@ local function finish_resolution()
     if #code.moved > 0 then note('Moved code found: ' .. table.concat(code.moved, ', ')) end
     if #missing > 0 then note('Optional code not found: ' .. table.concat(missing, ', ')) end
     local list = {}
-    for _, name in ipairs({'sound', 'scale'}) do
+    for _, name in ipairs({'sound', 'volume', 'scale'}) do
         list[#list + 1] = name .. ' ' .. (features[name] == true and 'ready' or ('off (' .. features[name] .. ')'))
     end
     local sounds = {}
@@ -513,6 +540,106 @@ for k, v in pairs(DEFAULTS) do options[k] = v end
 local menu_state = {menu = nil}
 local scale_dirty = true
 
+-- A line before an engine call's first use: an engine assert closes the game, and the log then names the call.
+local crumbs = {}
+local function crumb(what)
+    if crumbs[what] then return end
+    crumbs[what] = true
+    note('First call: ' .. what)
+end
+
+-- A lightuserdata's address ('%p'), or nil.
+local function address_of(object)
+    local ok, text = pcall(string.format, '%p', object)
+    return ok and tonumber((tostring(text):gsub('^0[xX]', '')), 16) or nil
+end
+
+-- The engine Lua API's Wwise world at a native address (the game's own), or nil. The main world first; the other
+-- worlds only if it is not that one's.
+local lua_world = {address = nil, object = nil, failed = nil}
+local function lua_wwise_world(address)
+    if lua_world.address == address then return lua_world.object end
+    if lua_world.failed == address then return nil end
+    local S = stingray
+    local seen = {}
+    local function try(world, what)
+        if world == nil then return nil end
+        crumb('Wwise.wwise_world (' .. what .. ')')
+        local object = S.Wwise.wwise_world(world)
+        local at = object ~= nil and address_of(object) or nil
+        seen[#seen + 1] = string.format('%s %s 0x%x', what, type(object), at or 0)
+        return at == address and object or nil
+    end
+    crumb('Application.main_world')
+    local object = try(S.Application.main_world(), 'main world')
+    if not object and S.Application.worlds then
+        crumb('Application.worlds')
+        for i, world in ipairs(S.Application.worlds() or {}) do
+            object = try(world, 'world ' .. i)
+            if object then break end
+        end
+    end
+    note(string.format('Wwise world 0x%x in Lua: %s (%s)', address, object and 'found' or 'NOT FOUND',
+                       table.concat(seen, '; ')))
+    if object then lua_world.address, lua_world.object, lua_world.failed = address, object, nil
+    else lua_world.failed = address end
+    return object
+end
+
+-- Once: what the engine's Lua API offers for sound, and every sound choice's Wwise event id (for the sound banks).
+local function log_audio_facts()
+    if crumbs.facts then return end
+    crumbs.facts = true
+    for _, name in ipairs({'Wwise', 'WwiseWorld'}) do
+        local keys = {}
+        pcall(function() for key in pairs(stingray[name]) do keys[#keys + 1] = tostring(key) end end)
+        table.sort(keys)
+        note(name .. ' API (' .. type(stingray[name]) .. '): ' .. table.concat(keys, ' '))
+    end
+    local ids = {}
+    for i = 2, #SOUNDS do
+        local sound = SOUNDS[i]
+        if code.found[sound.sig] then
+            ids[#ids + 1] = string.format('%s 0x%08x>%u/0x%08x>%u', sound.key:sub(8), V[sound.ship],
+                                          fn.audio_id(V[sound.ship]), V[sound.mission], fn.audio_id(V[sound.mission]))
+        end
+    end
+    note('Wwise events (game id>Wwise id, ship/mission): ' .. table.concat(ids, ', '))
+end
+
+-- The sound at another volume: what the game's UI sound function does (a new sound source in the game's Wwise
+-- world, the event posted on it), with the source's level set in between. With layers, a volume above 100% is
+-- several copies of the sound at once (each at volume / copies), so no source goes above the game's level.
+local function play_scaled(id, percent, layered)
+    local api = pointer(read(native.base + V.engine, 8))
+    local state = pointer(read(native.base + V.game_state, 8))
+    local world = state and pointer(read(state + V.ui_world, 8))
+    local make = api and pointer(read(api + V.make_source, 8))
+    local post = api and pointer(read(api + V.post_event, 8))
+    if not (world and make and post) then return false, 'the engine functions are unreadable' end
+    log_audio_facts()
+    local lua = lua_wwise_world(world)
+    if not lua then return false, 'the Wwise world is not in the Lua API' end
+    local event = fn.audio_id(id)
+    if event == 0 then return false, 'no Wwise event' end
+    local copies = (layered and percent > 100) and math.ceil(percent / 100) or 1
+    local level = percent / 100 / copies
+    make, post = ffi.cast('BetterChatMakeSource', make), ffi.cast('BetterChatPost', post)
+    local made = {}
+    for k = 1, copies do
+        crumb('make source')
+        local source = tonumber(make(world))
+        if source == NO_SOURCE then return false, 'no sound source' end
+        crumb('WwiseWorld.set_dry_environment_for_source')
+        stingray.WwiseWorld.set_dry_environment_for_source(lua, source, level)
+        crumb('post event')
+        made[k] = string.format('source %u playing %u', source, tonumber(post(world, event, source, 0)))
+    end
+    note(string.format('Scaled sound: Wwise event %u, world 0x%x, %d x level %.3f (%s)', event, world, copies, level,
+                       table.concat(made, ', ')))
+    return true
+end
+
 local function play(choice, why)
     local sound = SOUNDS[choice]
     if not (sound and sound.sig and features.sound == true and code.found[sound.sig]) then return false end
@@ -520,8 +647,17 @@ local function play(choice, why)
     local mode = state and V.mode and read32(state + V.mode)
     local id = V[mode == MODE_MISSION and sound.mission or sound.ship]
     if not id then return false end
-    fn.play_sound(0, id)
-    note(string.format('Sound 0x%08x (%s, mode %s)', id, why, tostring(mode)))
+    local scaled = false
+    if features.volume == true and options.volume ~= 100 then
+        local ok, done, problem = pcall(play_scaled, id, options.volume, options.layers)
+        scaled = ok and done
+        -- Without it the sound plays as the game does; after an error the volume stays off.
+        if not scaled then note('Volume not applied: ' .. tostring(ok and problem or done)) end
+        if not ok then features.volume = 'error: ' .. tostring(done) end
+    end
+    if not scaled then fn.play_sound(0, id) end
+    note(string.format('Sound 0x%08x (%s, mode %s, volume %s)', id, why, tostring(mode),
+                       scaled and (options.volume .. '%') or 'game'))
     return true
 end
 
@@ -531,6 +667,8 @@ end
 
 local SETTERS = {
     sound = function(v) v = math.floor(tonumber(v) or DEFAULTS.sound); return (v >= 1 and v <= #SOUNDS) and v or DEFAULTS.sound end,
+    volume = function(v) return clamp(v, VOLUME, DEFAULTS.volume) end,
+    layers = function(v) return v == true end,
     scale = function(v) return clamp(v, SCALE, DEFAULTS.scale) end,
 }
 
@@ -539,8 +677,8 @@ local function set_option(name, value, applied)
     if v ~= options[name] then note(string.format('Option %s = %s', name, tostring(v))) end
     options[name] = v
     if name == 'scale' then scale_dirty = true end
-    -- A sound picked in the menu plays once, so it can be heard.
-    if name == 'sound' and applied and M.ready then play(v, 'preview') end
+    -- A sound or a volume picked in the menu plays once, so it can be heard.
+    if name ~= 'scale' and applied and M.ready then play(options.sound, 'preview') end
 end
 
 local function connect_options()
@@ -553,14 +691,21 @@ local function connect_options()
     for i, sound in ipairs(SOUNDS) do choices[i] = i == 1 and 'OFF' or text(sound.key, 48) end
     local specs = {
         {'sound', {type = 'choice', choices = choices, default = DEFAULTS.sound}},
+        {'volume', {type = 'slider', min = VOLUME.min, max = VOLUME.max, step = VOLUME.step,
+                    default = DEFAULTS.volume}},
+        -- Test build only: how a volume above 100% is made.
+        {'layers', {type = 'toggle', default = DEFAULTS.layers, label = 'Volume Test: Layers',
+                    description = 'Test build only. OFF: above 100%, the sound is one copy at a higher level. ON: '
+                        .. 'above 100%, it is several copies at once. Try 200% and 400% both ways and tell which '
+                        .. 'gets louder.'}},
         {'scale', {type = 'slider', min = SCALE.min, max = SCALE.max, step = SCALE.step, default = DEFAULTS.scale}},
     }
     for _, entry in ipairs(specs) do
         local name, spec = entry[1], entry[2]
         local id = OPTION .. name
         spec.mod, spec.mod_id = mod, 'alomare.better_chat'
-        spec.label = text('option.' .. name .. '.label', 64)
-        spec.description = text('option.' .. name .. '.description', 400)
+        spec.label = spec.label or text('option.' .. name .. '.label', 64)
+        spec.description = spec.description or text('option.' .. name .. '.description', 400)
         local ok, done, why = pcall(menu.register_option, id, spec)
         if ok and done then
             pcall(menu.on_change, id, function(value) set_option(name, value, true) end)
