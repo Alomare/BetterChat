@@ -2,6 +2,14 @@
 
 Releases are named "Better Chat V&lt;n&gt;" (tag `v<n>`). Each section is that release's notes.
 
+## V3 (2026-10-06)
+
+- Added Paste (Ctrl+V), on by default: pastes the copied text into the chat while you type.
+- Added Translate Chat (highly experimental), off by default: other players' messages are translated through Google Translate and the translation is added below the original. Only you see the translations.
+- Added Translate To: Automatic (your Windows regional format's language), Game Language, or one of the game's languages.
+- Added Translate My Messages, off by default: also translates your own messages, to try translation alone.
+- Translated the new settings into every game language.
+
 ## V2 (2026-10-06)
 
 - The chat is now checked for new messages every 200 milliseconds instead of every frame.

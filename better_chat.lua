@@ -5,6 +5,11 @@
 -- - New message sound: when another player's chat line arrives, one of the game's own UI sounds plays, at most once
 --   every 2 seconds. Your own lines and lines from players you muted don't count (the game doesn't store those).
 -- - Chat size: the chat box and its text scale by the size set.
+-- - Chat translation (opt-in, off by default): another player's line is sent to Google Translate's keyless endpoint
+--   (translate.googleapis.com) by Windows' own curl.exe, started without a window; the line goes in through curl's
+--   standard input and the reply comes back through a pipe read every frame, so the game never waits. A line in
+--   another language than the game's Text Language is added to the chat, on this machine only, through the game's
+--   own add-line, under the same sender. Nothing is sent anywhere while the option is off.
 --
 -- How: the chat keeps its last 64 lines in a ring (first index, line count, then 64 lines of sender, time and
 -- text). Every 200 ms the mod reads the ring's first index and count (one small read); when lines were added, it
@@ -19,7 +24,7 @@ if rawget(_G, 'BetterChat') then return end
 
 local ffi = require('ffi')
 
-local M = {version = '2', frames = 0, errors = 0}
+local M = {version = '3', frames = 0, errors = 0}
 rawset(_G, 'BetterChat', M)
 
 local loader = rawget(_G, 'CowboyBingusModLoader')
@@ -47,7 +52,17 @@ local SIGS = {
      fields = {button_hover = {'u32', {11}}, button_click = {'u32', {18}}}},
     {name = 'option_row', rva = 0x17fde75, optional = true, text = 'BA ?? ?? ?? ?? 75 ?? BA ?? ?? ?? ?? E8 ?? ?? ?? ?? BA FF FF FF FF 48 8B CB 48 83 C4 20',
      fields = {option_click = {'u32', {1}}, option_refused = {'u32', {8}}, ui_sound = {'call', {13}, {17}}}},
+    {name = 'chat_input', rva = 0x18608d0, optional = true, text = '48 83 EC 28 80 B9 ?? ?? ?? ?? 00 4C 8B C9 74 ?? 84 D2 74 ?? E8 ?? ?? ?? ?? 84 C0 74 ?? 33 D2 49 8B C9',
+     fields = {chat_open = {'u32', {6}}}},
+    {name = 'chat_field', rva = 0x1860200, optional = true, text = '48 8B D3 48 8D 8F ?? ?? ?? ?? E8 ?? ?? ?? ?? 0F B6 87 0F 1E 00 00 40 88 AF 0F 1E 00 00',
+     fields = {chat_field = {'u32', {6}}, field_update = {'call', {11}, {15}}}},
+    {name = 'field_text', rva = 0x18f2ef8, optional = true, text = '44 8B 93 ?? ?? ?? ?? 48 8D 4C 24 40 41 FF CA E8 ?? ?? ?? ?? 48 8D 4C 24 40 8B D0 41 3B C2 72 ?? 41 8B D2 E8 ?? ?? ?? ?? 8B C8 48 8D 54 24 40 C6 44 0C 40 00 48 8D 8B ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 8B CB E8 ?? ?? ?? ?? 80 BB 76 0A 00 00 00',
+     fields = {field_max = {'u32', {3}}, field_widget = {'u32', {55}}, set_text_call = {'call', {60}, {64}}}},
+    {name = 'set_text', rva = 0x143dd60, optional = true, text = '48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 48 85 D2 48 8D 3D ?? ?? ?? ?? 48 8B D9 48 0F 45 FA BA 48 06 00 00 48 8B CF E8 ?? ?? ?? ?? 48 3D ?? ?? ?? ?? 73 ?? 41 B8 ?? ?? ?? ?? 48 8D 8B ?? ?? ?? ?? 48 8B D7 E8 ?? ?? ?? ??',
+     fields = {text_limit = {'u32', {47, 55}}, widget_text = {'u32', {62}}}},
     {name = 'play_sound', rva = 0x1327f50, text = '48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 48 8B 05 ?? ?? ?? ?? 8B DA 48 8B 0D ?? ?? ?? ?? 48 8B 90 88 02 00 00 48 8B 89 F8 10 00 00 48 8B B0 38 03 00 00',
+     fields = {}},
+    {name = 'add_line', rva = 0x10979c0, optional = true, text = '40 57 41 55 41 56 48 83 EC 40 80 39 00 4D 8B E8 4C 8B F2 48 8B F9 0F 84 ?? ?? ?? ??',
      fields = {}},
     {name = 'set_scale', rva = 0x1447ed0, optional = true, text = '48 89 5C 24 18 48 89 6C 24 20 48 89 54 24 10 56 57 41 57 48 83 EC 20 F3 0F 10 41 14',
      fields = {}},
@@ -322,10 +337,32 @@ local SOUNDS = {
     {key = 'choice.subtab', sig = 'button_sounds', ship = 'button_click', mission = 'button_click'},
     {key = 'choice.option', sig = 'option_row', ship = 'option_click', mission = 'option_click'},
 }
-local DEFAULTS = {sound = 2, scale = 100}
+local DEFAULTS = {sound = 2, scale = 100, paste = true, translate = false, translate_to = 1, translate_own = false}
 local SCALE = {min = 50, max = 200, step = 5}
 local SCALE_EVERY = 30         -- frames between size checks
 local MAX_LOG_LINES = 2000
+-- Translation: one curl process at a time, the lines waiting behind it in a short queue.
+local ENDPOINT = 'https://translate.googleapis.com/translate_a/single?client=gtx&dt=t&sl=auto&tl='
+local CURL_TIMEOUT = 8         -- seconds: curl's own limit for the request
+local JOB_LIMIT = 12           -- seconds: a curl process still running then is ended
+local RETRY_DELAY = 1          -- seconds before a server error or network failure is tried again (once)
+local QUEUE_MAX = 8            -- lines waiting for translation (the oldest is dropped beyond)
+local REPLY_MAX = 0x20000      -- bytes of a reply read at most
+local SHOW_MAX = 0x1f0         -- bytes of a shown line (the game's line holds 0x200 and a NUL)
+local MIN_LETTERS = 4          -- an ASCII-only line with fewer letters is not sent ("gg", "ez", "o7": misdetected)
+-- Paste: the clipboard's text is added to the chat's text box.
+local PASTE_MAX = 256          -- characters taken from the clipboard (the chat keeps fewer)
+-- Translate To (Mod Options Menu index): Automatic (Windows' regional format, else its display language), the
+-- game's Text Language, or one of the
+-- game's languages (Google's codes; Spanish and Latin American Spanish are one language there).
+local TRANSLATE_TO = {
+    {key = 'choice.automatic'}, {key = 'choice.game'},
+    {name = 'English', code = 'en'}, {name = 'Deutsch', code = 'de'}, {name = 'Español', code = 'es'},
+    {name = 'Français', code = 'fr'}, {name = 'Italiano', code = 'it'}, {name = 'Polski', code = 'pl'},
+    {name = 'Português (Brasil)', code = 'pt'}, {name = 'Português (Portugal)', code = 'pt-PT'},
+    {name = 'Русский', code = 'ru'}, {name = '日本語', code = 'ja'}, {name = '한국어', code = 'ko'},
+    {name = '简体中文', code = 'zh-CN'}, {name = '繁體中文', code = 'zh-TW'},
+}
 
 ---------------------------------------------------------------------------------------
 -- Logging and status
@@ -389,15 +426,73 @@ local function init_native()
             typedef struct { float x, y; } BetterChatVec2;
             typedef void (*BetterChatSound)(uint64_t unused, uint32_t id);
             typedef void (*BetterChatSetVec)(uint64_t widget, BetterChatVec2 value);
+            typedef void (*BetterChatAddLine)(uint64_t chat, uint64_t sender, const char *text);
+            typedef uint32_t (*BetterChatSetText)(uint64_t widget, const char *text);
+            typedef struct { uint32_t nLength; void *lpSecurityDescriptor; int bInheritHandle; } BetterChatSA;
+            typedef struct {
+                uint32_t cb; uint16_t *lpReserved, *lpDesktop, *lpTitle;
+                uint32_t dwX, dwY, dwXSize, dwYSize, dwXCountChars, dwYCountChars, dwFillAttribute, dwFlags;
+                uint16_t wShowWindow, cbReserved2; uint8_t *lpReserved2;
+                void *hStdInput, *hStdOutput, *hStdError;
+            } BetterChatStartupInfo;
+            typedef struct { BetterChatStartupInfo StartupInfo; void *lpAttributeList; } BetterChatStartupInfoEx;
+            typedef struct { void *hProcess, *hThread; uint32_t dwProcessId, dwThreadId; } BetterChatProcessInfo;
             void *better_chat_GetCurrentProcess(void) __asm__("GetCurrentProcess");
             void *better_chat_GetModuleHandleA(const char *name) __asm__("GetModuleHandleA");
             int better_chat_ReadProcessMemory(void *process, const void *address, void *buffer, size_t size,
                                               size_t *done) __asm__("ReadProcessMemory");
+            uint32_t better_chat_GetSystemDirectoryW(uint16_t *buffer, uint32_t size) __asm__("GetSystemDirectoryW");
+            uint32_t better_chat_GetFileAttributesW(const uint16_t *path) __asm__("GetFileAttributesW");
+            int better_chat_QueryPerformanceCounter(int64_t *count) __asm__("QueryPerformanceCounter");
+            int better_chat_QueryPerformanceFrequency(int64_t *frequency) __asm__("QueryPerformanceFrequency");
+            uint32_t better_chat_GetLastError(void) __asm__("GetLastError");
+            int better_chat_CreatePipe(void **read, void **write, BetterChatSA *attributes, uint32_t size)
+                __asm__("CreatePipe");
+            int better_chat_SetHandleInformation(void *handle, uint32_t mask, uint32_t flags)
+                __asm__("SetHandleInformation");
+            int better_chat_InitializeProcThreadAttributeList(void *list, uint32_t count, uint32_t flags,
+                                                             size_t *size) __asm__("InitializeProcThreadAttributeList");
+            int better_chat_UpdateProcThreadAttribute(void *list, uint32_t flags, uintptr_t attribute, void *value,
+                                                     size_t size, void *previous, size_t *returned)
+                __asm__("UpdateProcThreadAttribute");
+            void better_chat_DeleteProcThreadAttributeList(void *list) __asm__("DeleteProcThreadAttributeList");
+            int better_chat_CreateProcessW(const uint16_t *application, uint16_t *command_line, void *process_attributes,
+                                           void *thread_attributes, int inherit, uint32_t flags, void *environment,
+                                           const uint16_t *directory, BetterChatStartupInfoEx *startup,
+                                           BetterChatProcessInfo *info) __asm__("CreateProcessW");
+            int better_chat_WriteFile(void *handle, const void *buffer, uint32_t size, uint32_t *done,
+                                      void *overlapped) __asm__("WriteFile");
+            int better_chat_ReadFile(void *handle, void *buffer, uint32_t size, uint32_t *done, void *overlapped)
+                __asm__("ReadFile");
+            int better_chat_PeekNamedPipe(void *pipe, void *buffer, uint32_t size, uint32_t *read, uint32_t *available,
+                                          uint32_t *left) __asm__("PeekNamedPipe");
+            uint32_t better_chat_WaitForSingleObject(void *handle, uint32_t milliseconds)
+                __asm__("WaitForSingleObject");
+            int better_chat_GetExitCodeProcess(void *process, uint32_t *code) __asm__("GetExitCodeProcess");
+            int better_chat_TerminateProcess(void *process, uint32_t code) __asm__("TerminateProcess");
+            int better_chat_CloseHandle(void *handle) __asm__("CloseHandle");
+            uint32_t better_chat_GetCurrentProcessId(void) __asm__("GetCurrentProcessId");
+            uint16_t better_chat_GetUserDefaultUILanguage(void) __asm__("GetUserDefaultUILanguage");
+            int better_chat_GetUserDefaultLocaleName(uint16_t *name, int size) __asm__("GetUserDefaultLocaleName");
+            int better_chat_LCIDToLocaleName(uint32_t lcid, uint16_t *name, int size, uint32_t flags)
+                __asm__("LCIDToLocaleName");
+            void *better_chat_GlobalLock(void *memory) __asm__("GlobalLock");
+            int better_chat_GlobalUnlock(void *memory) __asm__("GlobalUnlock");
+            size_t better_chat_GlobalSize(void *memory) __asm__("GlobalSize");
+            int16_t better_chat_GetAsyncKeyState(int key) __asm__("GetAsyncKeyState");
+            void *better_chat_GetForegroundWindow(void) __asm__("GetForegroundWindow");
+            uint32_t better_chat_GetWindowThreadProcessId(void *window, uint32_t *process)
+                __asm__("GetWindowThreadProcessId");
+            int better_chat_OpenClipboard(void *owner) __asm__("OpenClipboard");
+            int better_chat_CloseClipboard(void) __asm__("CloseClipboard");
+            void *better_chat_GetClipboardData(uint32_t format) __asm__("GetClipboardData");
         ]])
     end
     local ok, k32 = pcall(ffi.load, 'kernel32')
     if not ok then return false, 'kernel32 unavailable' end
     native.k32, native.process = k32, k32.better_chat_GetCurrentProcess()
+    local ok_user, user32 = pcall(ffi.load, 'user32')
+    native.user32 = ok_user and user32 or nil
     local game = k32.better_chat_GetModuleHandleA('game.dll')
     if game == nil then return false, 'game.dll not loaded' end
     native.base = tonumber(ffi.cast('uint64_t', game))
@@ -486,11 +581,30 @@ local function finish_resolution()
     local scale_why = need({'chat_notice', 'set_scale'}, {'hud', 'chat_hud'})
     if not scale_why then fn.set_scale = ffi.cast('BetterChatSetVec', base + code.found.set_scale) end
     features.scale = scale_why or true
+    -- Translation: curl.exe (found at start); showing a translation also needs the chat's add-line, which must be
+    -- the function the chat ring's code is in.
+    local show_why = need({'add_line'})
+    if not show_why and code.found.add_line + 0x1c ~= code.found.chat_ring then
+        show_why = 'the add-line is not where the chat ring is'
+    end
+    if not show_why then fn.add_line = ffi.cast('BetterChatAddLine', base + code.found.add_line) end
+    features.show = show_why or true
+    -- Paste: the chat widget's input-open byte (read from the code), and user32 for the keys, clipboard and window.
+    local paste_why = need({'chat_input', 'chat_notice', 'chat_field', 'field_text', 'set_text'},
+                           {'hud', 'chat_hud', 'chat_open', 'chat_field', 'field_max', 'field_widget', 'text_limit',
+                            'widget_text'})
+    if not paste_why and V.set_text_call ~= code.found.set_text then paste_why = 'the text setter differs from its call' end
+    if not paste_why and not (V.field_update < code.found.field_text and code.found.field_text < V.field_update + 0x1000) then
+        paste_why = 'the text input code is not in the text field update'
+    end
+    if not paste_why and not native.user32 then paste_why = 'user32 unavailable' end
+    if not paste_why then fn.set_text = ffi.cast('BetterChatSetText', base + code.found.set_text) end
+    features.paste = paste_why or true
     M.ready = true
     if #code.moved > 0 then note('Moved code found: ' .. table.concat(code.moved, ', ')) end
     if #missing > 0 then note('Optional code not found: ' .. table.concat(missing, ', ')) end
     local list = {}
-    for _, name in ipairs({'sound', 'scale'}) do
+    for _, name in ipairs({'sound', 'scale', 'translate', 'show', 'paste'}) do
         list[#list + 1] = name .. ' ' .. (features[name] == true and 'ready' or ('off (' .. features[name] .. ')'))
     end
     local sounds = {}
@@ -532,6 +646,10 @@ end
 local SETTERS = {
     sound = function(v) v = math.floor(tonumber(v) or DEFAULTS.sound); return (v >= 1 and v <= #SOUNDS) and v or DEFAULTS.sound end,
     scale = function(v) return clamp(v, SCALE, DEFAULTS.scale) end,
+    paste = function(v) return v ~= false end,
+    translate = function(v) return v == true end,
+    translate_to = function(v) v = math.floor(tonumber(v) or 1); return (v >= 1 and v <= #TRANSLATE_TO) and v or 1 end,
+    translate_own = function(v) return v == true end,
 }
 
 local function set_option(name, value, applied)
@@ -551,9 +669,15 @@ local function connect_options()
     local mod = text('option.mod', 40)
     local choices = {}
     for i, sound in ipairs(SOUNDS) do choices[i] = i == 1 and 'OFF' or text(sound.key, 48) end
+    local languages = {}
+    for i, choice in ipairs(TRANSLATE_TO) do languages[i] = choice.name or text(choice.key, 48) end
     local specs = {
         {'sound', {type = 'choice', choices = choices, default = DEFAULTS.sound}},
         {'scale', {type = 'slider', min = SCALE.min, max = SCALE.max, step = SCALE.step, default = DEFAULTS.scale}},
+        {'paste', {type = 'toggle', default = true}},
+        {'translate', {type = 'toggle', default = false}},
+        {'translate_to', {type = 'choice', choices = languages, default = 1}},
+        {'translate_own', {type = 'toggle', default = false}},
     }
     for _, entry in ipairs(specs) do
         local name, spec = entry[1], entry[2]
@@ -571,6 +695,374 @@ local function connect_options()
         end
     end
     note('Mod Options Menu connected (version ' .. tostring(menu.version or 1) .. ')')
+end
+
+---------------------------------------------------------------------------------------
+-- Translation (opt-in): Windows' curl.exe asks Google Translate's keyless endpoint, one line at a time. The line goes
+-- to curl's standard input (never on its command line); the reply comes back through a pipe read every frame.
+
+local translate = {queue = {}, show = {}, job = nil, curl = nil, dir = nil, freq = nil, serial = 0}
+
+-- A minimal JSON reader (the endpoint's reply is nested arrays of strings, numbers and nulls). Raises on bad input.
+local json_value
+do
+    local ESCAPES = {['"'] = '"', ['\\'] = '\\', ['/'] = '/', b = '\b', f = '\f', n = '\n', r = '\r', t = '\t'}
+
+    local function utf8_char(cp)
+        if cp < 0x80 then return string.char(cp) end
+        if cp < 0x800 then return string.char(0xc0 + math.floor(cp / 0x40), 0x80 + cp % 0x40) end
+        if cp >= 0xd800 and cp <= 0xdfff then cp = 0xfffd end  -- a lone surrogate
+        if cp < 0x10000 then
+            return string.char(0xe0 + math.floor(cp / 0x1000), 0x80 + math.floor(cp / 0x40) % 0x40, 0x80 + cp % 0x40)
+        end
+        return string.char(0xf0 + math.floor(cp / 0x40000), 0x80 + math.floor(cp / 0x1000) % 0x40,
+                           0x80 + math.floor(cp / 0x40) % 0x40, 0x80 + cp % 0x40)
+    end
+
+    local function skip(s, i) return s:find('[^ \t\r\n]', i) or #s + 1 end
+
+    local function json_string(s, i)  -- s:sub(i, i) is the opening quote
+        local out, j = {}, i + 1
+        while true do
+            local at = s:find('["\\]', j)
+            if not at then error('unterminated string') end
+            out[#out + 1] = s:sub(j, at - 1)
+            if s:sub(at, at) == '"' then return table.concat(out), at + 1 end
+            local e = s:sub(at + 1, at + 1)
+            if e == 'u' then
+                local cp = tonumber(s:sub(at + 2, at + 5), 16)
+                if not cp or #s:sub(at + 2, at + 5) ~= 4 then error('bad \\u escape') end
+                j = at + 6
+                if cp >= 0xd800 and cp <= 0xdbff and s:sub(j, j + 1) == '\\u' then
+                    local low = tonumber(s:sub(j + 2, j + 5), 16)
+                    if low and low >= 0xdc00 and low <= 0xdfff then
+                        cp, j = 0x10000 + (cp - 0xd800) * 0x400 + (low - 0xdc00), j + 6
+                    end
+                end
+                out[#out + 1] = utf8_char(cp)
+            elseif ESCAPES[e] then
+                out[#out + 1], j = ESCAPES[e], at + 2
+            else
+                error('bad escape')
+            end
+        end
+    end
+
+    -- Returns the value and the position after it; null is nil (an array keeps its positions).
+    function json_value(s, i, depth)
+        depth = depth or 0
+        if depth > 32 then error('too deep') end
+        i = skip(s, i or 1)
+        local c = s:sub(i, i)
+        if c == '"' then return json_string(s, i) end
+        if c == '[' or c == '{' then
+            local close, out, n = c == '[' and ']' or '}', {}, 0
+            i = skip(s, i + 1)
+            if s:sub(i, i) == close then return out, i + 1 end
+            while true do
+                local key, v
+                if close == '}' then
+                    if s:sub(i, i) ~= '"' then error('bad object key') end
+                    key, i = json_string(s, i)
+                    i = skip(s, i)
+                    if s:sub(i, i) ~= ':' then error('missing colon') end
+                    i = i + 1
+                end
+                v, i = json_value(s, i, depth + 1)
+                n = n + 1
+                out[key or n] = v
+                i = skip(s, i)
+                local sep = s:sub(i, i)
+                if sep == close then return out, i + 1 end
+                if sep ~= ',' then error('missing comma') end
+                i = skip(s, i + 1)
+            end
+        end
+        for word, v in pairs({['true'] = true, ['false'] = false, null = 'null'}) do
+            if s:sub(i, i + #word - 1) == word then
+                if v == 'null' then return nil, i + #word end
+                return v, i + #word
+            end
+        end
+        local number = s:match('^-?%d+%.?%d*[eE]?[-+]?%d*', i)
+        if number and tonumber(number) then return tonumber(number), i + #number end
+        error('unexpected character at ' .. i)
+    end
+end
+
+-- The translated text and the detected language from the endpoint's reply: [[[part, original, ...], ...], nil,
+-- "es", ...].
+local function parse_reply(body)
+    local ok, data = pcall(json_value, body)
+    if not ok then return nil, 'bad reply (' .. tostring(data) .. ')' end
+    if type(data) ~= 'table' or type(data[1]) ~= 'table' then return nil, 'unexpected reply' end
+    local parts = {}
+    for i = 1, #data[1] do
+        local part = data[1][i]
+        if type(part) == 'table' and type(part[1]) == 'string' then parts[#parts + 1] = part[1] end
+    end
+    if #parts == 0 then return nil, 'no translation in the reply' end
+    return table.concat(parts), type(data[3]) == 'string' and data[3] or nil
+end
+
+-- Google's code for a language tag ('pt-BR', 'zh-Hant', 'pt-PT', 'nl-NL'...): Portuguese other than Brazil's is
+-- pt-PT, Chinese is zh-CN or zh-TW by script or region, any other tag gives its language.
+local function google_code(tag)
+    tag = tostring(tag or '')
+    local language = (tag:match('^(%a%a%a?)') or ''):lower()
+    local rest = tag:sub(#language + 1)
+    if language == '' then return nil end
+    if language == 'pt' then return (rest == '' or rest:match('^%-BR')) and 'pt' or 'pt-PT' end
+    if language == 'zh' then return (rest:match('Hant') or rest:match('^%-TW') or rest:match('^%-HK') or rest:match('^%-MO'))
+                                    and 'zh-TW' or 'zh-CN' end
+    return language
+end
+
+local function locale_name(name, n)
+    if n <= 1 then return nil end
+    local chars = {}
+    for i = 0, n - 2 do
+        if name[i] >= 0x80 then return nil end
+        chars[#chars + 1] = string.char(name[i])
+    end
+    return table.concat(chars)
+end
+
+-- Windows' regional format ('pt-BR': often the player's language when Windows itself is in English) and display
+-- language, as tags (nil when unreadable).
+local function windows_languages()
+    local k = native.k32
+    local name = ffi.new('uint16_t[85]')
+    local region = locale_name(name, k.better_chat_GetUserDefaultLocaleName(name, 85))
+    local display = locale_name(name, k.better_chat_LCIDToLocaleName(k.better_chat_GetUserDefaultUILanguage(), name, 85, 0))
+    return region, display
+end
+
+-- Google's code for the Translate To setting.
+local function target_language()
+    local choice = TRANSLATE_TO[options.translate_to] or TRANSLATE_TO[1]
+    if choice.code then return choice.code end
+    if choice.key == 'choice.automatic' then
+        local code = google_code(translate.region) or google_code(translate.display)
+        if code then return code end
+    end
+    return google_code(T.language()) or 'en'
+end
+
+local function same_language(source, target)
+    source, target = source:lower(), target:lower()
+    if source == target then return true end
+    local a, b = source:match('^%a+'), target:match('^%a+')
+    return a == b and a ~= 'zh'  -- Simplified and Traditional Chinese are different scripts
+end
+
+-- The first bytes of a UTF-8 text, never splitting a character.
+local function utf8_cut(s, max)
+    if #s <= max then return s end
+    local cut = max
+    while cut > 0 and s:byte(cut + 1) >= 0x80 and s:byte(cut + 1) < 0xc0 do cut = cut - 1 end
+    return s:sub(1, cut)
+end
+
+local function quoted(s) return '"' .. s:gsub('[%c]', ' ') .. '"' end
+
+-- An ASCII text as a NUL-terminated UTF-16 buffer.
+local function wide(s)
+    local buf = ffi.new('uint16_t[?]', #s + 1)
+    for i = 1, #s do buf[i - 1] = s:byte(i) end
+    return buf
+end
+
+local function now()  -- seconds, from the performance counter
+    local t = ffi.new('int64_t[1]')
+    native.k32.better_chat_QueryPerformanceCounter(t)
+    return tonumber(t[0]) / translate.freq
+end
+
+local function close(handle)
+    if handle ~= nil then native.k32.better_chat_CloseHandle(handle) end
+end
+
+-- Finds Windows' curl.exe (System32; Windows 10 1803 and later). True, or false and the reason.
+local function find_curl()
+    local k = native.k32
+    local freq = ffi.new('int64_t[1]')
+    if k.better_chat_QueryPerformanceFrequency(freq) == 0 or tonumber(freq[0]) <= 0 then
+        return false, 'no performance counter'
+    end
+    translate.freq = tonumber(freq[0])
+    local buf = ffi.new('uint16_t[260]')
+    local n = k.better_chat_GetSystemDirectoryW(buf, 260)
+    if n == 0 or n >= 260 then return false, 'system folder unreadable' end
+    local chars = {}
+    for i = 0, n - 1 do
+        if buf[i] >= 0x80 then return false, 'system folder name is not ASCII' end
+        chars[#chars + 1] = string.char(buf[i])
+    end
+    local dir = table.concat(chars)
+    local path = dir .. '\\curl.exe'
+    local attributes = k.better_chat_GetFileAttributesW(wide(path))
+    if attributes == 0xffffffff or math.floor(attributes / 16) % 2 == 1 then
+        return false, 'curl.exe not found in ' .. dir
+    end
+    translate.curl, translate.dir = path, dir
+    return true
+end
+
+-- Starts curl for one line: true, or nil and the reason.
+local function spawn(entry)
+    local k = native.k32
+    local sa = ffi.new('BetterChatSA')
+    sa.nLength, sa.bInheritHandle = ffi.sizeof(sa), 1
+    local in_r, in_w, out_r, out_w = ffi.new('void *[1]'), ffi.new('void *[1]'), ffi.new('void *[1]'),
+                                     ffi.new('void *[1]')
+    if k.better_chat_CreatePipe(in_r, in_w, sa, 0x1000) == 0 then return nil, 'CreatePipe failed' end
+    if k.better_chat_CreatePipe(out_r, out_w, sa, 0x10000) == 0 then
+        close(in_r[0]); close(in_w[0])
+        return nil, 'CreatePipe failed'
+    end
+    -- This process's ends are not inherited; curl gets only its own two ends (a handle list, when available).
+    k.better_chat_SetHandleInformation(in_w[0], 1, 0)
+    k.better_chat_SetHandleInformation(out_r[0], 1, 0)
+    local si = ffi.new('BetterChatStartupInfoEx')
+    si.StartupInfo.cb = ffi.sizeof(si)
+    si.StartupInfo.dwFlags = 0x100  -- STARTF_USESTDHANDLES
+    si.StartupInfo.hStdInput, si.StartupInfo.hStdOutput, si.StartupInfo.hStdError = in_r[0], out_w[0], out_w[0]
+    local flags = 0x08000000  -- CREATE_NO_WINDOW
+    local size = ffi.new('size_t[1]')
+    k.better_chat_InitializeProcThreadAttributeList(nil, 1, 0, size)
+    local list = tonumber(size[0]) > 0 and ffi.new('uint8_t[?]', tonumber(size[0]))
+    local handles = ffi.new('void *[2]', in_r[0], out_w[0])
+    if list and k.better_chat_InitializeProcThreadAttributeList(list, 1, 0, size) ~= 0 then
+        if k.better_chat_UpdateProcThreadAttribute(list, 0, 0x20002, handles, ffi.sizeof(handles), nil, nil) ~= 0 then
+            si.lpAttributeList, flags = list, flags + 0x80000  -- PROC_THREAD_ATTRIBUTE_HANDLE_LIST, EXTENDED_STARTUPINFO
+        else
+            k.better_chat_DeleteProcThreadAttributeList(list)
+            list = nil
+        end
+    else
+        list = nil
+    end
+    -- -sS: errors only; -w: the HTTP status after the body. The command line holds only this mod's constants.
+    local command = string.format('"%s" -sS -m %d --max-filesize %d -G --data-urlencode q@- -w "\\n@@ %%{http_code}" '
+                                  .. '"%s%s"', translate.curl, CURL_TIMEOUT, REPLY_MAX, ENDPOINT, entry.target)
+    local info = ffi.new('BetterChatProcessInfo')
+    local t0 = now()
+    local ok = k.better_chat_CreateProcessW(wide(translate.curl), wide(command), nil, nil, 1, flags, nil,
+                                            wide(translate.dir), si, info)
+    local spawn_ms = (now() - t0) * 1000
+    local err = ok == 0 and k.better_chat_GetLastError() or 0
+    if list then k.better_chat_DeleteProcThreadAttributeList(list) end
+    close(in_r[0]); close(out_w[0])
+    if ok == 0 then
+        close(in_w[0]); close(out_r[0])
+        return nil, 'CreateProcess failed (error ' .. tostring(err) .. ')'
+    end
+    close(info.hThread)
+    local done = ffi.new('uint32_t[1]')
+    k.better_chat_WriteFile(in_w[0], entry.text, #entry.text, done, nil)  -- fits the pipe: never waits
+    close(in_w[0])
+    translate.job = {entry = entry, process = info.hProcess, out = out_r[0], started = t0, spawn_ms = spawn_ms,
+                     chunks = {}, size = 0}
+    return true
+end
+
+-- Reads what curl wrote so far; 'done' once it exited (everything read), 'timeout' when it was ended.
+local function poll(job)
+    local k = native.k32
+    local exited = k.better_chat_WaitForSingleObject(job.process, 0) == 0
+    local available, got = ffi.new('uint32_t[1]'), ffi.new('uint32_t[1]')
+    while job.size < REPLY_MAX and k.better_chat_PeekNamedPipe(job.out, nil, 0, nil, available, nil) ~= 0
+          and available[0] > 0 do
+        local n = math.min(tonumber(available[0]), REPLY_MAX - job.size)
+        local buf = ffi.new('uint8_t[?]', n)
+        if k.better_chat_ReadFile(job.out, buf, n, got, nil) == 0 or got[0] == 0 then break end
+        job.chunks[#job.chunks + 1] = ffi.string(buf, got[0])
+        job.size = job.size + got[0]
+    end
+    if exited then return 'done' end
+    if now() - job.started > JOB_LIMIT then
+        k.better_chat_TerminateProcess(job.process, 1)
+        return 'timeout'
+    end
+end
+
+local function finish(job, how)
+    local entry = job.entry
+    local exit_code = ffi.new('uint32_t[1]')
+    native.k32.better_chat_GetExitCodeProcess(job.process, exit_code)
+    close(job.process); close(job.out)
+    translate.job = nil
+    local ms = (now() - job.started) * 1000
+    local out = table.concat(job.chunks)
+    local at, _, status = out:find('\n@@ (%d+)%s*$')
+    local body = at and out:sub(1, at - 1) or out
+    local head = string.format('Translation %d (%.0f ms, start %.1f ms)', entry.id, ms, job.spawn_ms)
+    if how == 'timeout' or exit_code[0] ~= 0 or status ~= '200' then
+        -- curl's own error message only (never the reply, which can hold the line).
+        note(string.format('%s failed: %s, curl exit %d, HTTP %s%s', head, how, exit_code[0], tostring(status),
+                           exit_code[0] ~= 0 and (': ' .. quoted(body:sub(1, 120))) or ''))
+        -- A server error or a network failure is tried once more, a second later.
+        local transient = how ~= 'timeout' and (exit_code[0] ~= 0 or (status or ''):match('^5'))
+        if transient and not entry.retried and options.translate then
+            entry.retried, entry.not_before = true, now() + RETRY_DELAY
+            table.insert(translate.queue, 1, entry)
+            note('Translation ' .. entry.id .. ' will be retried')
+        end
+        return
+    end
+    local text, source = parse_reply(body)
+    if not text then
+        note(string.format('%s failed: %s', head, source))
+        return
+    end
+    source = source or '?'
+    note(string.format('%s %s -> %s', head, source, entry.target))
+    if same_language(source, entry.target) then
+        note('Translation ' .. entry.id .. ' not shown: already in ' .. entry.target)
+    elseif text:lower() == entry.text:lower() then
+        note('Translation ' .. entry.id .. ' not shown: same as the line')
+    elseif features.show ~= true then
+        note('Translation ' .. entry.id .. ' not shown: ' .. tostring(features.show))
+    else
+        local label = '[' .. (source:match('^%a+') or source):upper() .. '] '
+        translate.show[#translate.show + 1] = {id = entry.id, sender = entry.sender,
+                                               text = utf8_cut(label .. text:gsub('%c', ' '), SHOW_MAX)}
+    end
+end
+
+-- A chat line to translate (sender: its 8 bytes as read).
+local function enqueue(sender, text)
+    if not options.translate or features.translate ~= true or text == '' then return end
+    if not text:find('[\128-\255]') and select(2, text:gsub('%a', '')) < MIN_LETTERS then
+        note('Line not translated: too short')
+        return
+    end
+    translate.serial = translate.serial + 1
+    if #translate.queue >= QUEUE_MAX then
+        note('Translation ' .. translate.queue[1].id .. ' dropped (queue full)')
+        table.remove(translate.queue, 1)
+    end
+    translate.queue[#translate.queue + 1] = {id = translate.serial, sender = sender, text = text,
+                                             target = target_language()}
+end
+
+-- One step per frame: reads the running curl, else starts the next line.
+local function pump()
+    if translate.job then
+        local how = poll(translate.job)
+        if how then finish(translate.job, how) end
+        return
+    end
+    if not options.translate then
+        if #translate.queue > 0 then translate.queue = {} end
+        return
+    end
+    local entry = translate.queue[1]
+    if not entry or (entry.not_before and now() < entry.not_before) then return end
+    table.remove(translate.queue, 1)
+    local ok, why = spawn(entry)
+    if not ok then note('Translation ' .. entry.id .. ' not started: ' .. why) end
 end
 
 ---------------------------------------------------------------------------------------
@@ -629,8 +1121,31 @@ local function watch_chat()
         if from_other then others = others + 1 end
         note(string.format('Line %d: sender %s%s, %d bytes, flags %s', slot, hex(sender),
                            from_other and '' or ' (you)', length, line_flags(chat, slot)))
+        if sender and length > 0 and (from_other or options.translate_own) then enqueue(sender, text:sub(1, length)) end
     end
     alert(others, new)
+end
+
+-- Adds the finished translations to the chat through the game's add-line (on this machine only), right after a
+-- check of the chat, then takes the history as it is now: the added lines are not new messages.
+local function show_translations()
+    watch_chat()
+    local ctx = ring.ctx
+    for _, entry in ipairs(translate.show) do
+        if ctx and pointer(read(native.base + V.context, 8)) == ctx then
+            local sender = ffi.new('uint64_t[1]')
+            ffi.copy(sender, entry.sender, 8)
+            fn.add_line(ctx + V.chat, sender[0], entry.text)
+            note('Translation ' .. entry.id .. ' shown')
+        else
+            note('Translation ' .. entry.id .. ' not shown: the chat changed')
+        end
+    end
+    translate.show = {}
+    if not ctx then return end
+    local header = read(ctx + V.chat + V.ring_first, 8)
+    local first, count = u32(header, 0), u32(header, 4)
+    if first and first < RING_SIZE and count <= RING_SIZE then ring.first, ring.count = first, count end
 end
 
 ---------------------------------------------------------------------------------------
@@ -662,6 +1177,101 @@ local function apply_scale()
 end
 
 ---------------------------------------------------------------------------------------
+-- Paste: Ctrl+V while the chat's text input is open. The clipboard's text is added to the end of the chat's text
+-- through the game's own text setter (the one its Steam text input uses); the chat's next update applies its own
+-- character limit. The engine's typed characters cannot be fed from here (posted WM_CHAR never reached them, 3-3).
+-- Line breaks and tabs become spaces; other control characters and characters outside the Basic Multilingual
+-- Plane (emoji) are left out.
+
+local paste = {v_down = false}
+
+-- The foreground window is the game's (this process's).
+local function game_in_front()
+    local u = native.user32
+    local window = u.better_chat_GetForegroundWindow()
+    if window == nil then return false end
+    local pid = ffi.new('uint32_t[1]')
+    u.better_chat_GetWindowThreadProcessId(window, pid)
+    return pid[0] == native.k32.better_chat_GetCurrentProcessId()
+end
+
+local function utf8_unit(c)  -- a UTF-16 code unit outside the surrogates
+    if c < 0x80 then return string.char(c) end
+    if c < 0x800 then return string.char(0xc0 + math.floor(c / 0x40), 0x80 + c % 0x40) end
+    return string.char(0xe0 + math.floor(c / 0x1000), 0x80 + math.floor(c / 0x40) % 0x40, 0x80 + c % 0x40)
+end
+
+-- The clipboard's text as UTF-8, cleaned for one chat line, or nil and the reason.
+local function clipboard_text()
+    local u, k = native.user32, native.k32
+    if u.better_chat_OpenClipboard(nil) == 0 then return nil, 'clipboard busy' end
+    local out, count, why = {}, 0, nil
+    local data = u.better_chat_GetClipboardData(13)  -- CF_UNICODETEXT
+    local text = data ~= nil and k.better_chat_GlobalLock(data) or nil
+    if text == nil then
+        why = 'no text in the clipboard'
+    else
+        local chars = ffi.cast('const uint16_t *', text)
+        local limit = math.floor(tonumber(k.better_chat_GlobalSize(data)) / 2)
+        local space = false
+        for i = 0, limit - 1 do
+            local c = chars[i]
+            if c == 0 or count >= PASTE_MAX then break end
+            if c == 9 or c == 10 or c == 13 or c == 32 or c == 0xa0 then
+                if not space and count > 0 then out[#out + 1], count = ' ', count + 1 end
+                space = true
+            elseif c >= 0x20 and c ~= 0x7f and (c < 0xd800 or c > 0xdfff) then
+                out[#out + 1], count, space = utf8_unit(c), count + 1, false
+            end
+        end
+        while out[#out] == ' ' do out[#out] = nil end
+        k.better_chat_GlobalUnlock(data)
+    end
+    u.better_chat_CloseClipboard()
+    if why then return nil, why end
+    if #out == 0 then return nil, 'nothing to type in the clipboard' end
+    return table.concat(out)
+end
+
+-- The first `chars` characters of a UTF-8 text, within `bytes` bytes.
+local function utf8_head(s, chars, bytes)
+    local at, n = 1, 0
+    while at <= #s and n < chars do
+        local b = s:byte(at)
+        local size = b < 0x80 and 1 or b < 0xe0 and 2 or b < 0xf0 and 3 or 4
+        if at + size - 1 > bytes then break end
+        at, n = at + size, n + 1
+    end
+    return s:sub(1, at - 1)
+end
+
+local function paste_step()
+    local u = native.user32
+    -- Ctrl+V: V pressed this frame (async key state, so it works however the game reads its keys) with Ctrl held.
+    local v_down = u.better_chat_GetAsyncKeyState(0x56) < 0
+    local pressed = v_down and not paste.v_down
+    paste.v_down = v_down
+    if not (pressed and u.better_chat_GetAsyncKeyState(0x11) < 0) then return end
+    local hud = pointer(read(native.base + V.hud, 8))
+    local widget = hud and hud + V.chat_hud
+    local open = widget and read(widget + V.chat_open, 1)
+    if not (open and open:byte() ~= 0) or not game_in_front() then return end
+    local added, why = clipboard_text()
+    if not added then note('Paste: ' .. why); return end
+    local field = widget + V.chat_field
+    local text_widget = field + V.field_widget
+    local current = read(text_widget + V.widget_text, V.text_limit)
+    current = current and current:match('^[^%z]*') or ''
+    -- The field keeps (limit - 1) characters; the setter refuses text_limit bytes or more.
+    local limit = read32(field + V.field_max)
+    local chars = (limit and limit > 1 and limit <= V.text_limit) and limit - 1 or V.text_limit
+    local text = utf8_head(current .. added, chars, V.text_limit - 1)
+    local changed = fn.set_text(text_widget, text)
+    note(string.format('Paste: %d bytes added (limit %s characters)%s', #text - #current, tostring(limit and limit - 1),
+                       changed ~= 0 and '' or ', text unchanged'))
+end
+
+---------------------------------------------------------------------------------------
 -- Frame step
 
 local function start()
@@ -677,6 +1287,12 @@ local function start()
     local tag, game_code = T.observe(read, native.base)
     note('Text language: ' .. tostring(T.language()) .. ' (game setting ' .. tostring(game_code or 'unreadable')
          .. ', tag ' .. tostring(tag) .. ')')
+    local curl_ok, curl_why = find_curl()
+    features.translate = curl_ok or curl_why
+    note('Translation: ' .. (curl_ok and ('curl at ' .. translate.curl) or ('off, ' .. curl_why)))
+    translate.region, translate.display = windows_languages()
+    note(string.format('Windows: regional format %s, display language %s (Automatic: %s)', tostring(translate.region),
+                       tostring(translate.display), tostring(google_code(translate.region) or google_code(translate.display))))
     code = sigscan.new(SIGS, read, native.base)
     local all, reason = code:start()
     if all == nil then
@@ -702,6 +1318,11 @@ local function frame(dt)
         last_check = clock
         watch_chat()
     end
+    if features.paste == true and options.paste then paste_step() end
+    if features.translate == true then
+        pump()
+        if #translate.show > 0 then show_translations() end
+    end
     if features.scale == true and (scale_dirty or M.frames % SCALE_EVERY == 0) then
         scale_dirty = false
         apply_scale()
@@ -726,5 +1347,7 @@ end
 
 note('Better Chat ' .. M.version .. ' loaded')
 M._test = {values = function() return V end, features = function() return features end,
-           options = function() return options end}  -- offline checks
+           options = function() return options end, json = function(s) return (json_value(s)) end, google_code = google_code,
+           reread_windows = function() translate.region, translate.display = windows_languages() end,
+           translate = translate}  -- offline checks
 return M
