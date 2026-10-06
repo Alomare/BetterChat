@@ -21,12 +21,19 @@ return {
         ['choice.subtab'] = 'Menu Subtab',
         -- The sound of clicking an option (changing a setting) in the menus.
         ['choice.option'] = 'Option Click',
+        -- The sound of confirming a popup in the menus.
+        ['choice.confirm'] = 'Menu Confirm',
+        -- The sound of going back in the menus.
+        ['choice.back'] = 'Menu Back',
+        -- The sound of opening the action wheel (the radial menu of emotes and quick messages).
+        ['choice.wheel'] = 'Action Wheel',
+        -- The sound of buying an item (a loud one).
+        ['choice.purchase'] = 'Item Purchase',
+        -- The sound of a confirmation dialog (a loud one).
+        ['choice.dialog'] = 'Confirmation Dialog',
         -- A slider: the text chat box's size in percent (100 = the game's size).
         ['option.scale.label'] = 'Chat Size (%)',
         ['option.scale.description'] = 'Makes the text chat and its text bigger or smaller. 100 keeps the game\'s size.',
-        -- A toggle: Ctrl+V pastes the clipboard's text into the chat box.
-        ['option.paste.label'] = 'Paste (Ctrl+V)',
-        ['option.paste.description'] = 'Ctrl+V pastes the copied text into the chat while you type. Line breaks become spaces; emoji are left out.',
         -- A toggle: translates other players' chat messages into the language chosen in Translate To.
         ['option.translate.label'] = 'Translate Chat',
         ['option.translate.description'] = 'Sends each message from another player to Google Translate (translate.googleapis.com) and adds the translation to your chat when it is in another language than the one set in Translate To. Only you see it. Nothing is sent while this is off.',
@@ -50,10 +57,13 @@ return {
         ['choice.tab'] = 48,
         ['choice.subtab'] = 48,
         ['choice.option'] = 48,
+        ['choice.confirm'] = 48,
+        ['choice.back'] = 48,
+        ['choice.wheel'] = 48,
+        ['choice.purchase'] = 48,
+        ['choice.dialog'] = 48,
         ['option.scale.label'] = 64,
         ['option.scale.description'] = 400,
-        ['option.paste.label'] = 64,
-        ['option.paste.description'] = 400,
         ['option.translate.label'] = 64,
         ['option.translate.description'] = 400,
         ['option.translate_to.label'] = 64,
