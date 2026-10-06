@@ -68,3 +68,70 @@ Test build `Better-Chat-2-recon-1` (script kept as `research/recon_volume_1.lua`
 ## V2
 
 No gap between the two options; the chat history is read every 200 ms of frame time instead of every frame.
+
+## Chat translation (offline, 2026-10-06)
+
+Request (a user comment): translate other players' chat messages. Design: opt-in, Google Translate's keyless endpoint through Windows' curl.exe, the translation added to the chat on this machine only.
+
+- **Showing a line:** add-line `0x10979c0(chat, sender, text)` (`_research/chat/send.c`) only writes the ring and calls the HUD notice; the network send is the chat box's `0x1097560`, which calls add-line for your own lines. So calling add-line with another player's peer id adds a line under that player's name only for you. It drops the line when the sender is no longer in the session, muted or blocked. It copies the text with a bounded copy into 0x201 bytes (a text of 0x201 bytes or more must never reach it): the mod cuts at 0x1f0 bytes on a UTF-8 boundary. Another player's text also goes through the platform filter (the flag in the text filter section); your own does not. Signature `add_line` (13 unique bytes, 28 used); `chat_ring` starts at its +0x1c, which the mod checks.
+- **No false new messages:** translations are added right after a chat check in the same frame, then the ring header is read again as the new baseline, so the added lines never count as new (no sound, no translation of a translation).
+- **The request:** `curl.exe -sS -m 8 --max-filesize 131072 -G --data-urlencode q@- -w "\n@@ %{http_code}" "https://translate.googleapis.com/translate_a/single?client=gtx&dt=t&sl=auto&tl=<target>"`, started with `CreateProcessW` (`CREATE_NO_WINDOW`, a handle list with only curl's own pipe ends, System32 as its folder). The line goes in on curl's standard input (`q@-`), never on the command line; the reply comes back through a pipe polled every frame with `PeekNamedPipe` (the game never waits). One curl at a time, up to 8 lines queued, a curl still running after 12 s is ended. Target = the game's Text Language mapped to Google's codes (pt-BR > pt, pt > pt-PT, zh-Hans > zh-CN, zh-Hant > zh-TW, es-419 > es). The reply is `[[[part, original, ...], ...], null, "<detected>", ...]`; a line already in the target language (same base language; Chinese scripts differ) or translated to itself is not shown.
+- **Measured outside the game (real kernel32, curl 8.21 on Windows 11):** `CreateProcessW` takes 9 ms the first time and about 2 ms after (the only cost on the game's frame); replies took 300-1150 ms. es, zh-CN and pt were detected correctly.
+- **Limits:** curl.exe ships with Windows 10 1803 and later; Proton/Wine has none (translation stays off, the status says why). The endpoint is unofficial (no key, may rate-limit or change). Only players with the mod see translations.
+
+## Recon 3-1 (live, 2026-10-06)
+
+Test build `Better-Chat-3-recon-1`: Translate Chat (off by default), Show In Chat (off: translations only in BetterChat.log) and Translate My Messages (to try it alone). This build logs each line's text and translation to BetterChat.log; the release should log neither.
+
+- Translations work in game: Spanish and German lines (your own, via Translate My Messages) were detected and translated in 626-836 ms; starting curl took 6-14 ms of the frame.
+- The first line got HTTP 500 from the endpoint (its text was not logged on failure). Not reproduced offline: 15 requests in a row got 200, and invalid UTF-8 gets 200 too (misdetected).
+- Show In Chat was on only for that failed line and was turned off before the next ones, so add-line was never called: showing is still untested.
+
+## Recon 3-2 (live, 2026-10-06)
+
+Test build `Better-Chat-3-recon-2`: a 5xx reply or a curl failure (network) is retried once after 1 s (not a 429 or a timeout); failures log the line's text; a breadcrumb line is logged before each add-line call.
+
+- **Showing works:** add-line called from the Lua update added "[PT] this is a message in Portuguese" and "[EU] no" to the chat under the sender; the added lines were never seen as new lines (the ring slots they took are absent from the "Line" entries). No crash, no 500 this time.
+- **Short lines are misdetected:** "ez" came back as Basque ("no"). Google's detection confidence does not separate them (Portuguese sentence 0.57, "ez" 0.61, "o7" Arabic 1.0). Rule since 3-3: an ASCII-only line with fewer than 4 letters is not sent ("gg", "ez", "o7", "ok", "lol"); a line with any other script always is.
+
+## Paste (offline, 2026-10-06)
+
+Request: Ctrl+V in the chat (the game has no paste). Decompiles: `_research/chat/paste/` (`textfield.c`, `text_input.c`).
+
+- **Input open:** the chat widget (HUD + chat_hud) byte +0x139b8 is set while the text input is open: the chat update `0x185fd10` runs the text field (widget + 0x1398, text at +0x16d4 = field + 0x33c) only then, and closes it through `0x185f500(widget, 0)`. Signature `chat_input` at `0x18608d0` (a widget function that starts by testing the byte; 34 bytes, the offset read from it).
+- **Where typed text comes from:** the text field update `0x18f2dc0` calls `0x12fd9b0(?, text, size)`, which walks the input devices (type 3 = keyboard) and reads that frame's keystrokes, an array of Unicode code points (the engine's `Keyboard.keystrokes`, filled from the window's WM_CHAR). Code points >= 0x20 are appended as UTF-8 within the size; 8 (backspace), 10/13 (enter), 27 (escape) and 9 (tab) end the frame's processing with their own result. The field then cuts to its character limit (+0xa84 - 1). Ctrl+V gives 0x16, which is ignored: no paste in the game. Separately, game mode +0xac564 == 1 takes text from the engine (`[engine + 0x10] + 0x650`): Steam's gamepad text input.
+- **Design:** on Ctrl+V (`GetAsyncKeyState`, an edge on V with Ctrl held) while the input is open and the foreground window belongs to this process, the clipboard's CF_UNICODETEXT is posted to that window as WM_CHAR, 16 per frame, at most 256 characters. Line breaks and tabs become one space, other control characters and surrogates (emoji: WM_CHAR would deliver halves) are left out. The game's own typing path keeps its limit and filters; no game memory is written. The paste stops if the chat closes.
+- **Checked outside the game:** the real clipboard read (LuaJIT, real user32) turned "olá mundo\r\nsegunda linha\tfim 😀 ok" into "olá mundo segunda linha fim ok".
+
+## Recon 3-3 (live, 2026-10-06)
+
+Test build `Better-Chat-3-recon-3`: Paste (Ctrl+V) through posted WM_CHAR, on by default; translation skips short ASCII lines.
+
+- **Paste failed:** every Ctrl+V was caught and its characters posted to the game window (`Paste: 16 characters`, ten times), but nothing reached the chat. The engine does not build its keystrokes from posted WM_CHAR (it may read the keyboard another way; helldivers2.exe is packed, not analysed).
+- **The target language was wrong for the user:** the game's Text Language is English (`us`) while the player writes Portuguese, so "translate into the Text Language" turned their own Portuguese into English. On this PC Windows' display language and Steam are English too; only Windows' regional format is pt-BR (home location Brazil; user languages en-US, pt-BR).
+
+## Paste through the text setter (offline, 2026-10-06)
+
+Decompile: `_research/chat/paste/set_text.c`.
+
+- `0x143dd60(text widget, text)` is the game's generic text widget setter (about 70 callers): it refuses text of 0x324 bytes or more, compares with the widget's text at +0x11c, copies (0x325) and refreshes the widget (`0x143de70`). The chat's text field calls it on its text widget (field + 0x220, whose +0x11c is the field's text at +0x33c) for Steam's text input. `0x18f39c0(field)` only scrolls the text so its end shows; the field's update calls it every frame.
+- **Design:** on Ctrl+V with the input open and the game window in front: the field's current text + the clipboard's (cleaned, UTF-8), cut to the field's character limit (+0xa84 minus 1) and under 0x324 bytes on character boundaries, through the setter. The next field update keeps it (no keystrokes) and applies its own limit again. No game memory is written by the mod.
+- Signatures: `chat_field` (the chat update's call to the field update: field = widget + 0x1398), `field_text` (the Steam text input branch: +0xa84, +0x220 and the call to the setter, which must be `set_text`) and `set_text` (0x324, +0x11c). The branch must lie inside the field update the chat calls.
+
+## Translate To (2026-10-06)
+
+A choice: Automatic (default: the language of Windows' regional format, `GetUserDefaultLocaleName`; else Windows' display language; else the game's), Game Language, or one of 13 languages (the game's, Spanish once: Google has one). Tags map to Google codes: pt-BR and pt > pt, other pt-* > pt-PT, zh Hant/TW/HK/MO > zh-TW, other zh > zh-CN, else the language subtag. A line already in the target language (same base language, Chinese scripts apart) is not shown, so Brazilian Portuguese is never translated to European Portuguese. Read live on this PC with the real API: regional format pt-BR, display language en-US.
+
+## Recon 3-4 (live, 2026-10-06)
+
+Test build `Better-Chat-3-recon-4`: paste through the game's text setter; Translate To.
+
+- **Paste works** through the setter (confirmed by the user).
+- **Translation works with another player** (sender `b0ef1d999fb9b08a`): his Portuguese lines were shown as Spanish, French and English as Translate To changed; his English line was not shown with Translate To = English; Automatic gave pt and translated "I LOVE YOU VERY MUCH" to Portuguese. Latency 275-1630 ms, curl start about 5 ms (12-14 ms the first times).
+- The original line stays and the translation is added below it (the user wanted it so: "important to leave the original message in").
+
+## V3
+
+- Paste (Ctrl+V, on by default) through the game's text setter; Translate Chat (off by default) with Translate To (Automatic = Windows' regional format) and Translate My Messages (kept as a setting so a player can try translation alone). Show In Chat was a test option and is gone: translations are always added to the chat.
+- The log never holds a message's text, its translation or the endpoint's reply (only curl's own error message when curl fails); the paste line logs only a byte count.
+- Public docs (README, Nexus, CHANGELOG) mark translation as highly experimental (the user's wording, an exception to the no-experimental rule) and state that only the player sees translations, what is sent and to whom.

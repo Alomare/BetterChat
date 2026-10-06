@@ -63,7 +63,23 @@ SPECS = [
     {'name': 'option_row', 'start': 0x17fde75, 'end': 0x17fde92, 'optional': True,
      'fields': {'option_click': (0x144418d5, 'u32'), 'option_refused': (0x3e8c63db, 'u32'),
                 'ui_sound': (0x1327f50, 'call')}},
+    # A chat widget function (0x18608d0) that starts by testing whether the chat's text input is open (paste).
+    {'name': 'chat_input', 'start': 0x18608d0, 'end': 0x18608f0, 'optional': True,
+     'fields': {'chat_open': (0x139b8, 'u32')}},
+    # Paste: the chat update's call to its text field's update (field = widget + chat_field), ...
+    {'name': 'chat_field', 'start': 0x1860200, 'end': 0x186021d, 'optional': True,
+     'fields': {'chat_field': (0x1398, 'u32'), 'field_update': (0x18f2dc0, 'call')}},
+    # ... the text field update's Steam text input branch: the field's character limit (+0xa84, minus 1), its text
+    # widget (+0x220) and the call to the text widget setter, ...
+    {'name': 'field_text', 'start': 0x18f2ef8, 'end': 0x18f2f47, 'optional': True,
+     'fields': {'field_max': (0xa84, 'u32'), 'field_widget': (0x220, 'u32'), 'set_text_call': (0x143dd60, 'call')}},
+    # ... and the text widget setter (widget, text): refuses 0x324 bytes or more, keeps the text at +0x11c.
+    {'name': 'set_text', 'start': 0x143dd60, 'end': 0x143ddaa, 'optional': True,
+     'fields': {'text_limit': (0x324, 'u32'), 'widget_text': (0x11c, 'u32')}},
     function('play_sound', 0x1327f50, 0x1327f84),      # posts a UI sound event; the first argument is unused
+    # The chat's add-line (chat, sender, text): shows a translation as a chat line (only on this machine); chat_ring
+    # starts at its +0x1c.
+    function('add_line', 0x10979c0, 0x10979dc, optional=True),
     function('set_scale', 0x1447ed0, 0x1447eec, optional=True),      # widget scale (+0x14, +0x18)
 ]
 
