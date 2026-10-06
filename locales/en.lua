@@ -24,6 +24,21 @@ return {
         -- A slider: the text chat box's size in percent (100 = the game's size).
         ['option.scale.label'] = 'Chat Size (%)',
         ['option.scale.description'] = 'Makes the text chat and its text bigger or smaller. 100 keeps the game\'s size.',
+        -- A toggle: Ctrl+V pastes the clipboard's text into the chat box.
+        ['option.paste.label'] = 'Paste (Ctrl+V)',
+        ['option.paste.description'] = 'Ctrl+V pastes the copied text into the chat while you type. Line breaks become spaces; emoji are left out.',
+        -- A toggle: translates other players' chat messages into the language chosen in Translate To.
+        ['option.translate.label'] = 'Translate Chat',
+        ['option.translate.description'] = 'Sends each message from another player to Google Translate (translate.googleapis.com) and adds the translation to your chat when it is in another language than the one set in Translate To. Only you see it. Nothing is sent while this is off.',
+        -- A choice: the language translations are shown in.
+        ['option.translate_to.label'] = 'Translate To',
+        ['option.translate_to.description'] = 'The language translations are shown in. Messages already in it are not translated. Automatic: the language of your Windows regional format (Settings > Time & language > Language & region). Game Language: the game\'s Text Language.',
+        -- The choices, shown in upper case: the language of Windows' regional format, and the game's Text Language setting.
+        ['choice.automatic'] = 'Automatic',
+        ['choice.game'] = 'Game Language',
+        -- A toggle: also translates the player's own messages.
+        ['option.translate_own.label'] = 'Translate My Messages',
+        ['option.translate_own.description'] = 'Also translates your own messages, so you can try translation alone. Only you see the translations.',
     },
     -- Mod Options Menu's limits, in characters.
     limits = {
@@ -37,5 +52,15 @@ return {
         ['choice.option'] = 48,
         ['option.scale.label'] = 64,
         ['option.scale.description'] = 400,
+        ['option.paste.label'] = 64,
+        ['option.paste.description'] = 400,
+        ['option.translate.label'] = 64,
+        ['option.translate.description'] = 400,
+        ['option.translate_to.label'] = 64,
+        ['option.translate_to.description'] = 400,
+        ['choice.automatic'] = 48,
+        ['choice.game'] = 48,
+        ['option.translate_own.label'] = 64,
+        ['option.translate_own.description'] = 400,
     },
 }
