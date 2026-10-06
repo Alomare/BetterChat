@@ -1,3 +1,5 @@
+<img width="1920" height="1080" alt="thumbnail" src="https://github.com/user-attachments/assets/a3a2c8f7-4444-43fd-bce7-505fe5d0d2ee" />
+
 # Better Chat
 
 A Helldivers 2 Lua mod for [Bingus Shared Loader](https://github.com/CowboyBingus/BingusSharedLoader) that plays a sound when another player sends a chat message, and lets you resize the text chat.
