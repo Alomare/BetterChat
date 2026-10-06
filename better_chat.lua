@@ -7,7 +7,7 @@
 -- - Chat size: the chat box and its text scale by the size set.
 --
 -- How: the chat keeps its last 64 lines in a ring (first index, line count, then 64 lines of sender, time and
--- text). Every frame the mod reads the ring's first index and count (one small read); when lines were added, it
+-- text). Every 200 ms the mod reads the ring's first index and count (one small read); when lines were added, it
 -- reads their senders and compares them with the local player's peer id. The sound goes through the game's UI sound
 -- function, the size through the game's widget scale setter on the chat widget.
 -- Everything native is found in game.dll by code signatures (first at this build's addresses, else by a search of
@@ -19,7 +19,7 @@ if rawget(_G, 'BetterChat') then return end
 
 local ffi = require('ffi')
 
-local M = {version = '1', frames = 0, errors = 0}
+local M = {version = '2', frames = 0, errors = 0}
 rawset(_G, 'BetterChat', M)
 
 local loader = rawget(_G, 'CowboyBingusModLoader')
@@ -310,6 +310,7 @@ local OPTION = 'alomare.better_chat.'
 local REQUIRED = {'chat_send', 'chat_ring', 'chat_line'}
 local RING_SIZE = 64           -- chat history lines (the add-line's index mask is 0x3f)
 local COOLDOWN = 2.0           -- seconds between two message sounds
+local CHECK_EVERY = 0.2        -- seconds between two reads of the chat history
 local MODE_MISSION = 4         -- game mode: 3 ship, 4 mission
 -- The sound choice (Mod Options Menu index): the game's own UI sounds, read from the code that plays them; the HUD
 -- notices have a value per game mode.
@@ -552,8 +553,7 @@ local function connect_options()
     for i, sound in ipairs(SOUNDS) do choices[i] = i == 1 and 'OFF' or text(sound.key, 48) end
     local specs = {
         {'sound', {type = 'choice', choices = choices, default = DEFAULTS.sound}},
-        {'scale', {type = 'slider', min = SCALE.min, max = SCALE.max, step = SCALE.step, default = DEFAULTS.scale,
-                   gap = true}},
+        {'scale', {type = 'slider', min = SCALE.min, max = SCALE.max, step = SCALE.step, default = DEFAULTS.scale}},
     }
     for _, entry in ipairs(specs) do
         local name, spec = entry[1], entry[2]
@@ -577,7 +577,7 @@ end
 -- New chat lines
 
 local ring = {ctx = nil, first = 0, count = 0}
-local clock, last_sound = 0, -math.huge
+local clock, last_sound, last_check = 0, -math.huge, -math.huge
 
 local function alert(others, total)
     note(string.format('%d new chat line(s), %d from other players', total, others))
@@ -698,7 +698,10 @@ local function frame(dt)
         if code.scan and code:step() then finish_resolution() end
         return
     end
-    watch_chat()
+    if clock - last_check >= CHECK_EVERY then
+        last_check = clock
+        watch_chat()
+    end
     if features.scale == true and (scale_dirty or M.frames % SCALE_EVERY == 0) then
         scale_dirty = false
         apply_scale()

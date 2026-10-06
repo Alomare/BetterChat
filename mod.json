@@ -3,9 +3,9 @@
     "guid": "b3ffcb44-9d18-4101-8b1b-8c3ff34e0ce9",
     "displayName": "Better Chat",
     "entry": "better_chat.lua",
-    "version": "1",
+    "version": "2",
     "icon": "icon.png",
-    "description": "Plays one of the game's own sounds when another player sends a chat message, and makes the text chat bigger or smaller. Settings in Mod Options Menu (escape menu > MODS).",
+    "description": "Plays a sound alert when another player sends a chat message, and allows changing the text chat's size. Settings in Mod Options Menu (escape menu > MODS).",
     "requires": [
         "Bingus Shared Loader v17 or newer",
         "Mod Options Menu (optional: the settings)"
