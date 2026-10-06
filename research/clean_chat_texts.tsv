@@ -1,0 +1,15 @@
+language	label	description
+de	Chat aufräumen	Zeigt im Chat nur Nachrichten von Spielern. Die Hinweise des Spiels, etwa wenn ein Spieler beitritt oder geht, werden dort ausgelassen.
+en	Clean Chat	Shows only players' messages in the chat. The game's own notices, such as a player joining or leaving, are left out of it.
+es-419	Chat limpio	Muestra solo los mensajes de los jugadores en el chat. Los avisos del propio juego, como cuando un jugador se une o se va, no aparecen en él.
+es	Chat limpio	Muestra solo los mensajes de los jugadores en el chat. Los avisos del propio juego, como cuando un jugador se une o se va, no aparecen en él.
+fr	Chat épuré	N'affiche que les messages des joueurs dans le chat. Les notifications du jeu, comme l'arrivée ou le départ d'un joueur, n'y apparaissent plus.
+it	Chat pulita	Mostra nella chat solo i messaggi dei giocatori. Gli avvisi del gioco, come l'ingresso o l'uscita di un giocatore, vengono omessi.
+ja	チャットを整理	チャットにプレイヤーのメッセージだけを表示します。プレイヤーの参加や退出など、ゲーム自体の通知は表示されません。
+ko	깔끔한 대화	대화에 플레이어의 메시지만 표시합니다. 플레이어 참가나 퇴장 같은 게임 자체의 알림은 표시되지 않습니다.
+pl	Czysty czat	Pokazuje na czacie tylko wiadomości graczy. Powiadomienia samej gry, na przykład o dołączeniu lub wyjściu gracza, są pomijane.
+pt-BR	Bate-papo Limpo	Mostra apenas as mensagens dos jogadores no bate-papo. Os avisos do próprio jogo, como a entrada ou a saída de um jogador, ficam de fora.
+pt	Conversação limpa	Mostra apenas as mensagens dos jogadores na conversação. Os avisos do próprio jogo, como a entrada ou a saída de um jogador, ficam de fora.
+ru	Чистый чат	Показывает в чате только сообщения игроков. Уведомления самой игры, например о входе или выходе игрока, в нём не появляются.
+zh-Hans	简洁聊天	聊天中只显示玩家的消息。游戏自身的通知（例如玩家加入或离开）不再显示。
+zh-Hant	簡潔聊天	聊天中只顯示玩家的訊息。遊戲本身的通知（例如玩家加入或離開）不再顯示。

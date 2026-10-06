@@ -3,7 +3,8 @@
 The Ghidra-ready dump (_research/game_25480438.dll, offsets == RVAs) is mapped at a fake base, so the signatures and
 the values read from the matched code are checked against the game's own code. The network context (chat ring) and the
 HUD (chat widget) are simulated on a fake heap; the game's UI sound, its widget scale setter and Mod Options Menu are
-stubs that record their calls. Kernel32 offers only reads: the mod writes no game memory itself.
+stubs that record their calls. Kernel32 offers only reads; a WriteProcessMemory stub records any write, and the tests
+require that there is none: the mod writes no game memory.
 
 Run from the workspace root or the mod folder:  python -B mods/BetterChat/tests/test_release.py
 """
@@ -303,8 +304,11 @@ def run():
     check(M.ready, 'ready: every signature at its rva, values read')
     check('Ready: chat = context + 0xc418, ring at +0x9590 (stride 0x228, sender +0xb98); sound ready, scale ready, translate ready, show ready, paste ready; '
           'sounds: joined 0xda653421/0x82250982, left 0xc386a64a/0x03cf15e0, '
-          'tab 0xadd37058/0xadd37058, subtab 0x468c8e58/0x468c8e58, option 0x144418d5/0x144418d5' in log(),
+          'tab 0xadd37058/0xadd37058, subtab 0x468c8e58/0x468c8e58, option 0x144418d5/0x144418d5, '
+          'confirm 0x7a69c309, back 0x96c8c848, wheel 0x22200946, purchase 0xa1af099e, dialog 0xd8fc9d33' in log(),
           'offsets and every sound id from code, every feature ready')
+    check('WriteProcessMemory' not in SOURCE and 'VirtualProtect' not in SOURCE,
+          'the script has no way to write memory (no WriteProcessMemory, no VirtualProtect)')
     check(status().startswith('OK - watching the chat'), 'status OK: %r' % status().splitlines()[0])
     check(len(f.calls) == 0 and 'Chat history: context 0x20000000, first 0, count 2' in log(),
           'lines already in the history make no sound')
@@ -370,20 +374,24 @@ def run():
     order = f2.order.split()
     s = f2.specs
     sound = s['alomare.better_chat.sound']
-    check(order == ['alomare.better_chat.' + n for n in ('sound', 'scale', 'paste', 'translate', 'translate_to', 'translate_own')],
-          'options registered in order: %r' % order)
-    names = [sound.choices[i]() for i in range(2, 7)]
-    check(sound.type == 'choice' and sound.choices[1] == 'OFF'
-          and names == ['Player Joined', 'Player Left', 'Menu Tab', 'Menu Subtab', 'Option Click']
+    check(order == ['alomare.better_chat.' + n for n in ('sound', 'scale', 'translate', 'translate_to', 'translate_own')],
+          'options registered in order (no paste option): %r' % order)
+    names = [sound.choices[i]() for i in range(2, 12)]
+    check(sound.type == 'choice' and sound.choices[1] == 'OFF' and len(sound.choices) == 11
+          and names == ['Player Joined', 'Player Left', 'Menu Tab', 'Menu Subtab', 'Option Click', 'Menu Confirm',
+                        'Menu Back', 'Action Wheel', 'Item Purchase', 'Confirmation Dialog']
           and sound.default == 2 and sound.label() == 'New Message Sound' and sound.mod() == 'Better Chat'
-          and sound.mod_id == 'alomare.better_chat', 'sound choice: OFF + five game sounds, texts as functions')
+          and sound.mod_id == 'alomare.better_chat', 'sound choice: OFF + the game sounds, texts as functions')
     sc = s['alomare.better_chat.scale']
     check(sc.type == 'slider' and sc.min == 50 and sc.max == 200 and sc.step == 5 and sc.default == 100
           and not sc.gap          and sc.label() == 'Chat Size (%)', 'size slider: 50-200% in steps of 5, 100 by default')
     w2.add(OTHER)
     lua2.execute('update(0.25)')
     check(len(f2.calls) == 0 and '1 new chat line(s), 1 from other players' in log2(), 'sound OFF: no sound')
-    for choice, want, what in ((4, TAB, 'menu tab'), (5, SUBTAB, 'menu subtab'), (6, OPTION, 'option click')):
+    for choice, want, what in ((4, TAB, 'menu tab'), (5, SUBTAB, 'menu subtab'), (7, 0x7a69c309, 'menu confirm'),
+                               (8, 0x96c8c848, 'menu back'), (9, 0x22200946, 'action wheel'),
+                               (10, 0xa1af099e, 'item purchase'), (11, 0xd8fc9d33, 'confirmation dialog'),
+                               (6, OPTION, 'option click')):
         f2.calls = lua2.table()
         lua2.execute('fake.changed["alomare.better_chat.sound"](%d)' % choice)
         check(list(f2.calls.values()) == ['sound 1327f50 %x' % want], 'picking %s plays it once (preview)' % what)
@@ -557,13 +565,9 @@ def run_paste(check):
     ctrl_v()
     check('Paste: no text in the clipboard' in log() and f.opened == f.closed_clipboard,
           'no text in the clipboard: logged, the clipboard closed')
-    # The option off: nothing.
-    clipboard('off')
-    lua.execute('ModOptionsMenu = fake.menu; update(0.016); fake.changed["alomare.better_chat.paste"](false)')
-    ctrl_v()
-    check(len(set_calls()) == n + 1, 'Paste off: Ctrl+V does nothing')
-    spec = f.specs['alomare.better_chat.paste']
-    check(spec.type == 'toggle' and spec.default is True and spec.label() == 'Paste (Ctrl+V)', 'paste toggle: on by default')
+    # Paste has no setting: it is always on.
+    lua.execute('ModOptionsMenu = fake.menu; update(0.016)')
+    check(f.specs['alomare.better_chat.paste'] is None, 'no paste option is registered')
 
     # The text setter moved: paste off, the rest works.
     logdir2 = Path(tempfile.mkdtemp())

@@ -135,3 +135,63 @@ Test build `Better-Chat-3-recon-4`: paste through the game's text setter; Transl
 - Paste (Ctrl+V, on by default) through the game's text setter; Translate Chat (off by default) with Translate To (Automatic = Windows' regional format) and Translate My Messages (kept as a setting so a player can try translation alone). Show In Chat was a test option and is gone: translations are always added to the chat.
 - The log never holds a message's text, its translation or the endpoint's reply (only curl's own error message when curl fails); the paste line logs only a byte count.
 - Public docs (README, Nexus, CHANGELOG) mark translation as highly experimental (the user's wording, an exception to the no-experimental rule) and state that only the player sees translations, what is sent and to whom.
+
+## Louder alert sounds (offline, 2026-10-06)
+
+Request: instead of a volume setting, offer game sounds that are louder by themselves. Tools: `research/sound_ids.py` (ids the code passes to the UI sound function and to post_audio: 281 and 37) and `research/sound_survey.py` (needs HD2ReAudio's core, hd2-audio-modder's v154 parser and vgmstream). Outputs in `_research/chat/sounds/` (`survey/survey.tsv` and `.json`, `names_cracked.txt`, `listen/*.wav`).
+
+- **The sound map is game data, not runtime state.** `0x1255800` loads the resource of type `0xe3f2851035957af5`, name `0xb9ee36888ef19818` (`[engine + 0x10] + 0x3f8`): u32 capacity (65536), then capacity x (game id, Wwise event id) with 0 for an empty slot, then a second table of the same shape. 20,848 sounds. It reproduces every id pair read live in recon 2-1. Extract it with `go run ./cmd/res_dump <data> 0xe3f2851035957af5 <out>` (res_dump takes a raw type hash now).
+- **A game sound id is a name hash.** id = the upper 32 bits of MurmurHash64A (seed 0) of the Wwise event name; the Wwise id is FNV-1 of the same name. Checked on 164 known names (`music_mission_leave` > 0xc26f4705 > 137483901). So an id is stable across game updates while the event keeps its name, and a guessed name can be verified against 64 bits. A dictionary search (words joined with `_` after `ui_`, `hud_`, `menu_`) named 127 UI events: `ui_generic_tab` (Menu Tab), `ui_generic_select` (Menu Subtab), `ui_generic_popup_confirm`, `ui_generic_back`, `hud_wheel_social_open`, `hud_mission_complete_appear`, `hud_death_notification_appear`... The join and leave notices and the two loudest sounds stayed unnamed.
+- **Banks:** UI sounds are in `content/audio/ui_ship` (616 events) and `content/audio/ui_mission` (330); 100 events are in both, which is what an alert needs to play on the ship and in missions. `game_init` holds states and parameters, no sounds. The chat's own open, close and send events (0x74ef3f93, 0x5d5ed59c, 0xe1ba68c0) exist with no actions, which is why Message Sent was mute in recon 1.
+- **Each UI event plays two sounds:** the audio (Wwise Vorbis) and a generated source (plugin 0x830402, most likely controller haptics).
+- **Loudness score** = the loudest 100 ms of the decoded audio (RMS, dBFS) + the volume property (id 5 in these banks, dB) of the sound and its parents. Bus volumes are not included (two buses are in use: 4061956780 for menu sounds, 2438906104 for HUD sounds). The current choices: Player Joined -33.8, Option Click -35.1, Menu Tab -35.4, Player Left -40.4, Menu Subtab -43.6. Positioning does not matter: the join notice is a 3D sound and plays fine on the source the UI sound function makes.
+- **Louder sounds in both banks (3 s at most):** 0xa1af099e -20.0 (2.34 s; 35 ids share its audio, name unknown), 0xd8fc9d33 -24.3 (1.25 s, name unknown), `ui_generic_popup_confirm` 0x7a69c309 -28.0 (1.38 s), `ui_generic_back` 0x96c8c848 -28.2 (1.5 s), `hud_wheel_social_open` 0x22200946 -28.3 (0.8 s), `ui_generic_popup_open` 0xd2758677 -29.4. Louder still but in one bank only: `hud_death_notification_appear` -15.8 (mission, 3.9 s), `ui_loadout_menu_ready_player` -21.7 (ship, 3 s), `hud_mission_complete_appear` -20.9 (mission, 6 s).
+
+## Clean Chat (offline, 2026-10-06): not released
+
+Request: only player-sent messages in the chat. Decompile: `_research/chat/clean/notices.c`. **The design built in 4-recon-1 and 4-recon-2 wrote game code and was detected by GameGuard (see Recon 4-2 result); it is gone since 4-recon-3. Never write game.dll's code.**
+
+- **Every line the chat shows goes through `0x185f470(chat widget, feed entry, seconds)`:** it writes the next of the widget's lines and shows the chat for that long. The entry comes from the HUD's feed log (hud + 0x4f7080: a ring of 64 entries of 0x4b4 bytes, index +0x12d00, count +0x12d04; an entry starts with the id of its text format, 0x1c12037f for a chat line).
+- **15 calls in build 25480438.** One is the chat notice's (`0x12f3022`, the last instruction of the `chat_notice` signature): a player's line, and the translations this mod adds through add-line. The other 14 are the game's own notices: `0x12f21cc`, `0x12f23f9` (inside the player joined notice `0x12f21e0`), `0x12f268f`, `0x12f2a3f`, `0x12f2ca6`, `0x12f2d97`, `0x12f2f3a`, `0x12f5c57` and six in network message handlers (`0x607e8c`, `0xb600f4`, `0xb8405b`, `0xb92780`, `0xb9958e`, `0x1088454`). Which notice each one is was not worked out; none carries a player's text.
+- **The rejected design:** each of the 14 calls replaced by a 5-byte no-op through `WriteProcessMemory` while the option was on. It worked offline and applied cleanly in game (14 of 14), and the game was closed by GameGuard or crashed within a minute each time.
+- **The chat widget** (hud + 0x14498): 64 line widgets of 0x3d8 bytes from +0x4390, next slot at +0x13990, line count at +0x139c0 (stops at 64), shown height +0x139c4, show timer +0x139c8 (seconds), input open +0x139b8, hidden +0x139ba. A line: flags +0 (0x10 visible), text widget +0x110, a state byte +0x3c8 (the update clears it when it hides lines), target position +0x3cc, move pending +0x3d4. `0x185f470` = set the line (`0x1860b00`: the text widget gets the entry's format id, name, colours and text) + `0x185f170` (next slot + 1, count + 1, then every line from the newest is placed at the summed height of the newer ones and made visible) + timer = max(timer, seconds) + un-hide (`+0x139ba` cleared, fade in). The chat update `0x185fd10` follows the player's chat visibility setting `[game state + 0xac53c]` (0 always shown, 1 shown until the timer runs out, 3 hidden) and hides through `0x185f130`.
+- **A way without code writes (idea, not built):** remove a notice's line after the game added it. Each frame read the next slot and count; for a new line that is not a chat line, put the next slot and count back by two (two data writes in the HUD object, which is heap memory), call `0x185f170` to lay the lines out again, hide the removed line's widget with the game's widget visibility setter, restore the timer and call `0x185f130` if the chat was hidden. Open: where the line's text widget keeps the format id (to tell a notice from a player's line), whether Lua's update runs before the frame is drawn (else the line shows for one frame), and several lines added in one frame. A new build must use a new option id: the user's Mod Options Menu values still hold `alomare.better_chat.clean = true`. The texts written for the option are in `research/clean_chat_texts.tsv`.
+
+## Recon 4-1 (test build, 2026-10-06)
+
+Test build `Better-Chat-4-recon-1`: Clean Chat by code patches (off by default; removed in 4-recon-3); the Paste setting is gone (paste is always on; a saved value for it in Mod Options Menu is ignored); five new sound choices given by their ids: Menu Confirm, Menu Back, and three with test names, Social Wheel, Loud A (0xa1af099e) and Loud B (0xd8fc9d33). To check live: Clean Chat hides the join and leave lines and keeps players' lines and translations, both ways without a restart; each new sound plays on the ship and in a mission and is louder; what Loud A and Loud B are, to name them.
+
+## Recon 4-1 result (live, 2026-10-06)
+
+- Every new sound played from the menu on the ship (the log shows each preview). The user named the three test choices: Loud A (0xa1af099e) is Item Purchase, Loud B (0xd8fc9d33) is Confirmation Dialog, Social Wheel (0x22200946) is Action Wheel.
+- Clean Chat was turned on (14 of 14 notice calls) and the game crashed seconds later, before any chat line was seen. The dump (`%APPDATA%\Arrowhead\Helldivers2\dumps`) is an access violation at `helldivers2.exe+0x626296` on a rendering thread: a read of `[rax + rcx*8 + 4]` with a bad index, the stack holding only helldivers2.exe, d3d11.dll and the AMD driver. The 11 older dumps kept there, from 2026-09-29 on (Better Chat's first build is of 2026-10-06), have the same address and the same kind of stack. I took that as proof that Clean Chat was not involved; Recon 4-2 says otherwise.
+
+## Recon 4-2 (test build, 2026-10-06)
+
+Test build `Better-Chat-4-recon-2`: the three sounds under their names, translated; nothing else changed (Clean Chat still by code patches).
+
+## Recon 4-2 result (live, 2026-10-06): GameGuard
+
+Three sessions in three minutes (GameGuard's own logs in `bin/GameGuard` are dated 19:42:02, 19:43:39 and 19:44:42), Clean Chat on from the saved setting, so the calls were patched 0.2 s after the mod loaded:
+
+1. Better Chat and a few other mods: GameGuard's "suspicious program detected", the game closed, about a minute after launch.
+2. Better Chat off: no problem in 1 to 2 minutes.
+3. As 1: a crash. The log shows Clean Chat on at t14.8, off at t47.2 and on again at t48.0 (19:44:33.9, the user changing the option); the escape menu closed at 19:44:34.6 and the game was gone by 19:44:38. The dump is the same fault at `helldivers2.exe+0x626296`.
+
+- **Writing game.dll's code is detected.** Clean Chat was the only part of the mod that wrote game memory at all, and the only thing new since V3 besides sound ids and a removed setting. It matches what the other runtimes say: HD2Runtime "patches no game code: no detours, no `.text` writes (the Bingus community convention, and the game ships GameGuard)", and Mod Bindings Menu writes only game.dll's read-write data section. The hd2-lua-mod skill only warns about reading from another process; this is the missing half.
+- **The crash:** both crashes of this day came seconds after a Clean Chat write, so the patches are the likely trigger of those two. The same fault is in 11 dumps from before Better Chat existed, so it has another trigger as well; which one is not known (the stack never holds mod code). If it comes back without code patches, look at what the two logged cases share besides the patch: the escape menu's MODS tab had just been used.
+- Nothing lasts beyond the session: the patches were in memory only.
+
+## Recon 4-3 (test build, 2026-10-06)
+
+Test build `Better-Chat-4-recon-3`: Clean Chat removed (the option, the search of the game's code and every write; the script has no WriteProcessMemory any more, which a test checks). Kept from 4-recon-2: the five louder sounds and paste without a setting. To check live: no GameGuard message and no crash in a normal session with the same mods.
+
+## Recon 4-3 result (live, 2026-10-06)
+
+The user confirmed that Clean Chat was the cause, and dropped it: it stays out of the mod.
+
+## V4
+
+- Five louder New Message Sound choices given by their ids (Menu Confirm, Menu Back, Action Wheel, Item Purchase, Confirmation Dialog), after Option Click so the earlier choices keep their numbers. The Paste setting is gone: paste is always on, and a value saved for it in Mod Options Menu is ignored.
+- No Clean Chat. The mod writes no game memory.
+
