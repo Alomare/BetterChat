@@ -195,3 +195,63 @@ The user confirmed that Clean Chat was the cause, and dropped it: it stays out o
 - Five louder New Message Sound choices given by their ids (Menu Confirm, Menu Back, Action Wheel, Item Purchase, Confirmation Dialog), after Option Click so the earlier choices keep their numbers. The Paste setting is gone: paste is always on, and a value saved for it in Mod Options Menu is ignored.
 - No Clean Chat. The mod writes no game memory.
 
+
+## Ship and mission sounds (offline, 2026-10-09)
+
+- The sound option is split in two: `sound` ("Sound Alert in Ship", which keeps the value saved by V4) is used everywhere but in missions, and `sound_mission` ("Sound Alert in Mission") is used when the game mode is 4. The menu preview plays the picked sound in the current mode.
+- Two new choices, from sounds the user found in Audiodiver (archive `f6fb08cc02d24255`, bank `content/audio/ui_mission`; Audiodiver's "Sound N" is the Nth group of takes in the bank). Read with hd2-audio-modder's v154 parser; the game ids come from the sound map (`sound_survey.py`'s reading). Both events are in `ui_mission` only (checked against every bank), so the two choices are listed in the mission option only.
+  - **Reinforce Request** (Audiodiver "Sound 82"): game id `0x4a300afb` (`0xba33ce36` maps to the same event, 0x36b4a8db). The event plays a continuous sequence (loop 1, no transition) of a Wwise Silence source (plugin 0x00650002, no parameters, so Wwise's default of 1 s) and then one random take of three (1.68 s), plus a haptics source. So the sound starts 1 s after the alert. No event plays the takes without the silence. Game code posts it through the UI sound function (rva `0x1327f50`, the one Better Chat calls) at `0x60b2c6` and `0xb83a85`; with a flag bit set it posts `0xda1fb33b` instead, a layer of the same sequence and a 1 s sound from another group (decompiles in `_research/chat/reinforce/request_ids.c`). The event `hud_spectator_request_reinforce` (0x3b3d2f51) is empty, so it is not this one.
+  - **Countdown** (Audiodiver "Sound 65"): game id `0x9da28dab` (event 0xdf38444b), a sequence with one child, a random take of six (1.5 s each), so one play is one 1.5 s take. The game plays it once when a player leaves the mission area and stops it with 0xdf59b412 or 0x4cac138d when they come back (`_research/chat/reinforce/near.c`).
+- To check live: both play in a mission (Reinforce Request after its 1 s of silence) and are not cut off; the ship option does not list them; each option keeps its own choice; the ship option keeps its V4 value.
+
+## Recon 5-2 (test build, 2026-10-10)
+
+Test build `Better-Chat-5-recon-2`: 5-recon-1 plus a "Sound Alert on My Messages" toggle (`sound_own`, off by default, after the two sound options), so the alert can be tried alone: with it on, your own chat lines play the alert like another player's (same choice per ship or mission, same cooldown). Lines the mod adds itself (translations) are still never counted. Same pattern as Translate My Messages.
+
+## Recon 5-2 result (live, 2026-10-10)
+
+- Everything worked as intended: the ship and mission options, Reinforce Request and Countdown in a mission, Sound Alert on My Messages. The user keeps the toggle for V5.
+- **A 282 ms stall on the first translated message** (solo lobby, Translate My Messages on). Mod Lag Watchdog (patpatpatrick's `mod_lag_finder`, log in `%APPDATA%\Arrowhead\Helldivers2\mod_lag_finder.log`; frames of 50 ms or more are broken down by mod) charged 266 ms of it to Better Chat. Better Chat's log has the same figure: `Translation 1 (544 ms, start 266.0 ms)`, the time inside `CreateProcessW` on the game's thread. The second translation started in 5.4 ms. Outside the game the first start took 9 ms (see Translation above), so the first start of a session is the slow one in the game process.
+- It was the only stall of 50 ms or more charged to Better Chat that session. Its worst frame per minute was about 1 ms, except in the minute of the last two messages (translation already off): 12.5 ms, which the log cannot explain (a new line reads a few hundred bytes, writes three log lines, each flushed, and calls the game's sound function). The 10-06 sessions (V3/V4 recon builds) had worst frames of 6-20 ms in most minutes.
+
+## Recon 5-3 (test build, 2026-10-10)
+
+Test build `Better-Chat-5-recon-3`:
+
+- **Curl warm-up.** As soon as translation is on (at load when saved on, or when turned on in the menu), curl is started once with `-V` (it only prints its version; nothing is sent), through the same code as a translation; lines wait for it. Logged as `Curl warm-up (<ms>, start <ms>)`. Once per session: turning the option off and on again does not repeat it.
+- **Slow updates logged.** An update of Better Chat over 4 ms is logged (at most 40 per session) with the ms of each part (chat, paste, translate, show, scale, other) and, inside them, of the sound call, curl starts and log writes (with their line count). The counter is set up at start for every timing, not only for translation; `now()` reuses one buffer.
+- To check live: the warm-up's start time at load, and a first translated message with no stall; every `Slow update` line, to find what took the 12.5 ms. (The session's steps were in a `TESTING.md`, removed at the release.)
+
+## Recon 5-3 result (live, 2026-10-10): the warm-up didn't help
+
+The user stopped after the first message: still a stutter. `BetterChat.log`:
+
+- Translate Chat turned on in the menu at t92.1; the warm-up `curl -V` started in **9.3 ms** (74 ms to exit).
+- The first message at t105.0: its curl started in **311.2 ms** (`Slow update: 311.4 ms (... translate 311.3 ... curl start 311.2 ...)`).
+- With 5-recon-2's 266 ms (first message) and 5.4 ms (second message, the same command line), the cost follows the command line, not the order: the first start of a curl whose command line holds an address (`https://translate.googleapis.com/...`) is slow, the same command line again is fast, `curl -V` is fast. Something inspects new command lines of processes the game starts (GameGuard or the antivirus; the 9 ms measured outside the game says it is the game process's children only), and remembers them.
+- **Paste:** `Slow update` lines with paste at 4.3-14.8 ms on 8 frames in 3 minutes, without any Ctrl+V. On those frames `paste_step` made one call, `GetAsyncKeyState(V)`. The chat check's `ReadProcessMemory` calls (about 5 every 200 ms) never showed more than 0.2 ms. This is the 12.5 ms of 5-recon-2, and likely the 6-20 ms worst frames of the 10-06 sessions (paste came in 3-recon-3).
+- Arsenal showed the old description: the user changed `description` in mod.json at 02:34, after the 5-recon-3 build (02:28). Arsenal's record (`%LOCALAPPDATA%\hd2arsenal\hd2a_data.json`, `modsLibrary`) holds the description of the ZIP it last imported, so a rebuild carries the new one.
+
+## Recon 5-4 (test build, 2026-10-10)
+
+Test build `Better-Chat-5-recon-4`:
+
+- **curl's command line is always `"<System32>\curl.exe" -K -`.** The request goes in through standard input as a curl config: `silent`, `show-error`, `max-time = 8`, `max-filesize = 131072`, `get`, `data-urlencode = "q=<line>"`, `write-out = "\n@@ %{http_code}"`, `url = "<endpoint><target>"`. The line's value is quoted with `\` and `"` escaped and control characters as spaces, so it can't end the value or the line. Checked with the real curl 8.21.0: five lines (quotes, backslashes, tab, newline, CR, DEL, a trailing backslash, `output = ...`) each came back in the request's `q` exactly as sent, with no option added and no file written; one real request to the endpoint answered `@@ 200`. The config is at most 0xf00 bytes (the input pipe holds 0x1000, so the write never waits).
+- **The warm-up uses the same command line** with an empty config: curl exits at once with code 2 ("no URL specified") and sends nothing. If the inspection keys on an address in the command line, there is none any more; if it keys on the exact command line, the warm-up has shown it.
+- **Paste reads the keys only while the chat's text input is open**: the open flag is read every 100 ms (two `ReadProcessMemory` calls); `GetAsyncKeyState` is not called while the chat is closed.
+- To check live: the steps were in a `TESTING.md`, removed at the release.
+
+## Recon 5-4 result (live, 2026-10-10)
+
+The user saw no stutter; translation and paste worked in every case. From the logs:
+
+- The warm-up at load started curl in 12.4 ms (exit 2). Seven translations started curl in 5.2-6.4 ms, the first in 5.2 ms (266 and 311 ms in 5-recon-2 and 5-recon-3): keeping the address off curl's command line removed the slow start.
+- Paste: nine pastes, none logged as a slow update in 3.6 minutes (5-recon-3 had 8 slow paste frames in 3 minutes).
+- Mod Lag Watchdog: no stall charged to Better Chat; its worst frame per minute was 5.9-6.7 ms, a translated message's curl start.
+- The other `Slow update` lines are those curl starts (5-7 ms, over the 4 ms threshold): the cost left on a translated message.
+
+## V5
+
+- Sound Alert in Ship (`sound`, keeps the V4 value) and Sound Alert in Mission (`sound_mission`); the mission one adds Reinforce Request (`0x4a300afb`) and Countdown (`0x9da28dab`), only in the missions' bank. Sound Alert on My Messages (`sound_own`), off by default.
+- curl's command line is always `curl.exe -K -` (the request as a config on its input), with one start in advance when translation is on; paste reads the keys only while the chat's input is open. `Slow update` lines (over 4 ms, at most 40 per session) stay as diagnostics.
+- Not in V5: Vietnamese translations show `?` for the letters the game's chat font lacks (todo.txt).

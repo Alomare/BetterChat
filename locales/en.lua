@@ -8,9 +8,14 @@ return {
     strings = {
         -- The mod's name: its category button in Mod Options Menu (escape menu > MODS), shown in upper case.
         ['option.mod'] = 'Better Chat',
-        -- A choice: the sound played when another player sends a chat message (or OFF).
-        ['option.sound.label'] = 'New Message Sound',
-        ['option.sound.description'] = 'Plays one of the game\'s own sounds when another player sends a chat message, at most once every 2 seconds. Pick a sound and apply to hear it.',
+        -- Two choices: the sound played when another player sends a chat message (or OFF), on the ship and in missions.
+        ['option.sound.label'] = 'Sound Alert in Ship',
+        ['option.sound.description'] = 'Plays one of the game\'s own sounds when another player sends a chat message while you are on the ship, at most once every 2 seconds. Pick a sound and apply to hear it.',
+        ['option.sound_mission.label'] = 'Sound Alert in Mission',
+        ['option.sound_mission.description'] = 'Plays one of the game\'s own sounds when another player sends a chat message while you are in a mission, at most once every 2 seconds. Pick a sound and apply to hear it.',
+        -- A toggle: the sound alert also plays for the player's own messages (to try the sounds alone).
+        ['option.sound_own.label'] = 'Sound Alert on My Messages',
+        ['option.sound_own.description'] = 'Also plays the sound alert for your own messages, so you can try the sounds alone.',
         -- The choices, shown in upper case: game sounds named by where the game plays them. The notice when a player joins.
         ['choice.joined'] = 'Player Joined',
         -- The notice when a player leaves.
@@ -31,6 +36,10 @@ return {
         ['choice.purchase'] = 'Item Purchase',
         -- The sound of a confirmation dialog (a loud one).
         ['choice.dialog'] = 'Confirmation Dialog',
+        -- The sound played when a dead player asks to be reinforced (missions only).
+        ['choice.reinforce'] = 'Reinforce Request',
+        -- The countdown tick played when a player leaves the mission area (missions only).
+        ['choice.countdown'] = 'Countdown',
         -- A slider: the text chat box's size in percent (100 = the game's size).
         ['option.scale.label'] = 'Chat Size (%)',
         ['option.scale.description'] = 'Makes the text chat and its text bigger or smaller. 100 keeps the game\'s size.',
@@ -52,6 +61,10 @@ return {
         ['option.mod'] = 40,
         ['option.sound.label'] = 64,
         ['option.sound.description'] = 400,
+        ['option.sound_mission.label'] = 64,
+        ['option.sound_mission.description'] = 400,
+        ['option.sound_own.label'] = 64,
+        ['option.sound_own.description'] = 400,
         ['choice.joined'] = 48,
         ['choice.left'] = 48,
         ['choice.tab'] = 48,
@@ -62,6 +75,8 @@ return {
         ['choice.wheel'] = 48,
         ['choice.purchase'] = 48,
         ['choice.dialog'] = 48,
+        ['choice.reinforce'] = 48,
+        ['choice.countdown'] = 48,
         ['option.scale.label'] = 64,
         ['option.scale.description'] = 400,
         ['option.translate.label'] = 64,
