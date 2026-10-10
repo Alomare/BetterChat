@@ -2,15 +2,18 @@
 -- Better Chat by Alomare.
 --
 -- Quality of life for the game's text chat, each part set in Mod Options Menu (escape menu > MODS, optional):
--- - New message sound: when another player's chat line arrives, one of the game's own UI sounds plays, at most once
---   every 2 seconds. Your own lines and lines from players you muted don't count (the game doesn't store those).
+-- - Sound alert: when another player's chat line arrives, one of the game's own UI sounds plays, at most once
+--   every 2 seconds, chosen separately for the ship and for missions. Lines from players you muted don't count
+--   (the game doesn't store those); your own lines count only with Sound Alert on My Messages on (to try it alone).
 -- - Chat size: the chat box and its text scale by the size set.
 -- - Paste: Ctrl+V adds the clipboard's text to the chat while you type.
 -- - Chat translation (opt-in, off by default): another player's line is sent to Google Translate's keyless endpoint
---   (translate.googleapis.com) by Windows' own curl.exe, started without a window; the line goes in through curl's
---   standard input and the reply comes back through a pipe read every frame, so the game never waits. A line in
---   another language than the game's Text Language is added to the chat, on this machine only, through the game's
---   own add-line, under the same sender. Nothing is sent anywhere while the option is off.
+--   (translate.googleapis.com) by Windows' own curl.exe, started without a window; curl's options and the line go in
+--   through its standard input (a config read with -K -), so its command line is always the same and holds no
+--   address, and the reply comes back through a pipe read every frame: the game only waits for curl to start (a few
+--   ms). curl is started once in advance, with nothing to do, as soon as the option is on. A line in another
+--   language than the game's Text Language is added to the chat, on this machine only, through the game's own
+--   add-line, under the same sender. Nothing is sent anywhere while the option is off.
 --
 -- How: the chat keeps its last 64 lines in a ring (first index, line count, then 64 lines of sender, time and
 -- text). Every 200 ms the mod reads the ring's first index and count (one small read); when lines were added, it
@@ -25,7 +28,7 @@ if rawget(_G, 'BetterChat') then return end
 
 local ffi = require('ffi')
 
-local M = {version = '4', frames = 0, errors = 0}
+local M = {version = '5', frames = 0, errors = 0}
 rawset(_G, 'BetterChat', M)
 
 local loader = rawget(_G, 'CowboyBingusModLoader')
@@ -328,11 +331,12 @@ local RING_SIZE = 64           -- chat history lines (the add-line's index mask 
 local COOLDOWN = 2.0           -- seconds between two message sounds
 local CHECK_EVERY = 0.2        -- seconds between two reads of the chat history
 local MODE_MISSION = 4         -- game mode: 3 ship, 4 mission
--- The sound choice (Mod Options Menu index): the game's own UI sounds. The first five are read from the code that
--- plays them (the HUD notices have a value per game mode). The others are louder sounds given by the game's id for
--- them, which is the upper half of MurmurHash64A of the sound event's name (the game data maps it to the event), so
--- it stays the same across game updates; each is in both UI sound banks (ship and missions). An id the game no
--- longer knows plays nothing.
+-- The sound choices (Mod Options Menu index; one option for the ship, one for missions): the game's own UI sounds.
+-- The first five are read from the code that plays them (the HUD notices have a value per game mode). The others are
+-- louder sounds given by the game's id for them, which is the upper half of MurmurHash64A of the sound event's name
+-- (the game data maps it to the event), so it stays the same across game updates. An id the game no longer knows
+-- plays nothing. The sounds marked `mission_only` are only in the mission UI sound bank, so they would be silent on
+-- the ship: they come last, and the ship option lists the ones before them.
 local SOUNDS = {
     {},                        -- OFF
     {key = 'choice.joined', sig = 'join_feed', ship = 'join_ship', mission = 'join_mission'},
@@ -345,11 +349,20 @@ local SOUNDS = {
     {key = 'choice.wheel', id = 0x22200946},       -- hud_wheel_social_open
     {key = 'choice.purchase', id = 0xa1af099e},    -- event name unknown; the loudest short sound in both banks
     {key = 'choice.dialog', id = 0xd8fc9d33},      -- event name unknown
+    -- Event name unknown; 1 s of silence, then a dead player's reinforce request (the game plays it the same way).
+    {key = 'choice.reinforce', id = 0x4a300afb, mission_only = true},
+    -- Event name unknown; the tick played when a player leaves the mission area.
+    {key = 'choice.countdown', id = 0x9da28dab, mission_only = true},
 }
-local DEFAULTS = {sound = 2, scale = 100, translate = false, translate_to = 1, translate_own = false}
+local SHIP_SOUNDS = #SOUNDS    -- the choices of the ship option: SOUNDS[1 .. SHIP_SOUNDS]
+while SOUNDS[SHIP_SOUNDS].mission_only do SHIP_SOUNDS = SHIP_SOUNDS - 1 end
+local DEFAULTS = {sound = 2, sound_mission = 2, sound_own = false, scale = 100, translate = false, translate_to = 1,
+                  translate_own = false}
 local SCALE = {min = 50, max = 200, step = 5}
 local SCALE_EVERY = 30         -- frames between size checks
 local MAX_LOG_LINES = 2000
+local SLOW_UPDATE = 4          -- ms: an update slower than this is logged with what took the time (diagnostics)
+local SLOW_LOG_MAX = 40        -- slow updates logged at most
 -- Translation: one curl process at a time, the lines waiting behind it in a short queue.
 local ENDPOINT = 'https://translate.googleapis.com/translate_a/single?client=gtx&dt=t&sl=auto&tl='
 local CURL_TIMEOUT = 8         -- seconds: curl's own limit for the request
@@ -359,8 +372,10 @@ local QUEUE_MAX = 8            -- lines waiting for translation (the oldest is d
 local REPLY_MAX = 0x20000      -- bytes of a reply read at most
 local SHOW_MAX = 0x1f0         -- bytes of a shown line (the game's line holds 0x200 and a NUL)
 local MIN_LETTERS = 4          -- an ASCII-only line with fewer letters is not sent ("gg", "ez", "o7": misdetected)
+local CONFIG_MAX = 0xf00       -- bytes of curl's config at most (its input pipe holds 0x1000: the write never waits)
 -- Paste: the clipboard's text is added to the chat's text box.
 local PASTE_MAX = 256          -- characters taken from the clipboard (the chat keeps fewer)
+local PASTE_CHECK_EVERY = 0.1  -- seconds between two reads of the chat input's open flag (keys are read only while open)
 -- Translate To (Mod Options Menu index): Automatic (Windows' regional format, else its display language), the
 -- game's Text Language, or one of the
 -- game's languages (Google's codes; Spanish and Latin American Spanish are one language there).
@@ -385,14 +400,19 @@ end
 
 local log_file = open_log('BetterChat.log')
 local log_lines = 0
+-- Timings (diagnostics): the performance counter's frequency, and the ms spent in this update by part. `now` is set
+-- once the counter is known.
+local perf = {freq = nil, now = nil, slow = 0}
 
 local function note(msg)
     if not log_file or log_lines >= MAX_LOG_LINES then return end
     log_lines = log_lines + 1
+    local t0 = perf.now and perf.now()
     pcall(function()
         log_file:write(string.format('[f%d t%.1f] %s\n', M.frames, os.clock(), msg))
         log_file:flush()
     end)
+    if t0 then perf.log, perf.log_lines = perf.log + (perf.now() - t0) * 1000, perf.log_lines + 1 end
 end
 
 local function write_status(lines)
@@ -641,16 +661,23 @@ for k, v in pairs(DEFAULTS) do options[k] = v end
 local menu_state = {menu = nil}
 local scale_dirty = true
 
+-- The game mode (3 ship, 4 mission), or nil.
+local function game_mode()
+    local state = pointer(read(native.base + V.game_state, 8))
+    return state and V.mode and read32(state + V.mode)
+end
+
 local function play(choice, why)
     local sound = SOUNDS[choice]
     if not (sound and features.sound == true and (sound.id or (sound.sig and code.found[sound.sig]))) then
         return false
     end
-    local state = pointer(read(native.base + V.game_state, 8))
-    local mode = state and V.mode and read32(state + V.mode)
+    local mode = game_mode()
     local id = sound.id or V[mode == MODE_MISSION and sound.mission or sound.ship]
     if not id then return false end
+    local t0 = perf.now and perf.now()
     fn.play_sound(0, id)
+    if t0 then perf.sound = perf.sound + (perf.now() - t0) * 1000 end
     note(string.format('Sound 0x%08x (%s, mode %s)', id, why, tostring(mode)))
     return true
 end
@@ -659,8 +686,17 @@ local function clamp(v, range, default)
     return math.max(range.min, math.min(range.max, tonumber(v) or default))
 end
 
+local function sound_choice(count)
+    return function(v)
+        v = math.floor(tonumber(v) or DEFAULTS.sound)
+        return (v >= 1 and v <= count) and v or DEFAULTS.sound
+    end
+end
+
 local SETTERS = {
-    sound = function(v) v = math.floor(tonumber(v) or DEFAULTS.sound); return (v >= 1 and v <= #SOUNDS) and v or DEFAULTS.sound end,
+    sound = sound_choice(SHIP_SOUNDS),
+    sound_mission = sound_choice(#SOUNDS),
+    sound_own = function(v) return v == true end,
     scale = function(v) return clamp(v, SCALE, DEFAULTS.scale) end,
     translate = function(v) return v == true end,
     translate_to = function(v) v = math.floor(tonumber(v) or 1); return (v >= 1 and v <= #TRANSLATE_TO) and v or 1 end,
@@ -673,7 +709,7 @@ local function set_option(name, value, applied)
     options[name] = v
     if name == 'scale' then scale_dirty = true end
     -- A sound picked in the menu plays once, so it can be heard.
-    if name == 'sound' and applied and M.ready then play(v, 'preview') end
+    if (name == 'sound' or name == 'sound_mission') and applied and M.ready then play(v, 'preview') end
 end
 
 local function connect_options()
@@ -682,12 +718,15 @@ local function connect_options()
     menu_state.menu = menu
     local function text(key, limit) return host_text(menu, 2, key, limit) end
     local mod = text('option.mod', 40)
-    local choices = {}
+    local choices, ship_choices = {}, {}
     for i, sound in ipairs(SOUNDS) do choices[i] = i == 1 and 'OFF' or text(sound.key, 48) end
+    for i = 1, SHIP_SOUNDS do ship_choices[i] = choices[i] end
     local languages = {}
     for i, choice in ipairs(TRANSLATE_TO) do languages[i] = choice.name or text(choice.key, 48) end
     local specs = {
-        {'sound', {type = 'choice', choices = choices, default = DEFAULTS.sound}},
+        {'sound', {type = 'choice', choices = ship_choices, default = DEFAULTS.sound}},
+        {'sound_mission', {type = 'choice', choices = choices, default = DEFAULTS.sound_mission}},
+        {'sound_own', {type = 'toggle', default = false}},
         {'scale', {type = 'slider', min = SCALE.min, max = SCALE.max, step = SCALE.step, default = DEFAULTS.scale}},
         {'translate', {type = 'toggle', default = false}},
         {'translate_to', {type = 'choice', choices = languages, default = 1}},
@@ -715,7 +754,7 @@ end
 -- Translation (opt-in): Windows' curl.exe asks Google Translate's keyless endpoint, one line at a time. The line goes
 -- to curl's standard input (never on its command line); the reply comes back through a pipe read every frame.
 
-local translate = {queue = {}, show = {}, job = nil, curl = nil, dir = nil, freq = nil, serial = 0}
+local translate = {queue = {}, show = {}, job = nil, curl = nil, dir = nil, serial = 0, warm = false}
 
 -- A minimal JSON reader (the endpoint's reply is nested arrays of strings, numbers and nulls). Raises on bad input.
 local json_value
@@ -887,10 +926,18 @@ local function wide(s)
     return buf
 end
 
+local counter = ffi.new('int64_t[1]')
 local function now()  -- seconds, from the performance counter
-    local t = ffi.new('int64_t[1]')
-    native.k32.better_chat_QueryPerformanceCounter(t)
-    return tonumber(t[0]) / translate.freq
+    native.k32.better_chat_QueryPerformanceCounter(counter)
+    return tonumber(counter[0]) / perf.freq
+end
+
+-- The performance counter, for every timing: false when Windows has none.
+local function init_clock()
+    local freq = ffi.new('int64_t[1]')
+    if native.k32.better_chat_QueryPerformanceFrequency(freq) == 0 or tonumber(freq[0]) <= 0 then return false end
+    perf.freq, perf.now = tonumber(freq[0]), now
+    return true
 end
 
 local function close(handle)
@@ -900,11 +947,7 @@ end
 -- Finds Windows' curl.exe (System32; Windows 10 1803 and later). True, or false and the reason.
 local function find_curl()
     local k = native.k32
-    local freq = ffi.new('int64_t[1]')
-    if k.better_chat_QueryPerformanceFrequency(freq) == 0 or tonumber(freq[0]) <= 0 then
-        return false, 'no performance counter'
-    end
-    translate.freq = tonumber(freq[0])
+    if not perf.freq then return false, 'no performance counter' end
     local buf = ffi.new('uint16_t[260]')
     local n = k.better_chat_GetSystemDirectoryW(buf, 260)
     if n == 0 or n >= 260 then return false, 'system folder unreadable' end
@@ -923,8 +966,29 @@ local function find_curl()
     return true
 end
 
--- Starts curl for one line: true, or nil and the reason.
+-- A value in curl's config, quoted, with backslashes and quotes escaped and control characters as spaces: a chat
+-- line can't end the value or the config line, so it can't add an option.
+local function config_value(s)
+    return '"' .. s:gsub('%c', ' '):gsub('[\\"]', '\\%0') .. '"'
+end
+
+-- curl's config for a line: the request (the line in it) and how the reply is written.
+local function curl_config(entry)
+    return table.concat({
+        'silent', 'show-error',                                         -- errors only
+        'max-time = ' .. CURL_TIMEOUT, 'max-filesize = ' .. REPLY_MAX,
+        'get', 'data-urlencode = ' .. config_value('q=' .. entry.text),  -- the line, in the address's query
+        'write-out = "\\n@@ %{http_code}"',                             -- the HTTP status after the body
+        'url = ' .. config_value(ENDPOINT .. entry.target), ''}, '\n')
+end
+
+-- Starts curl for one line (or, for the warm-up, with an empty config: it exits at once, "no URL", code 2): true, or
+-- nil and the reason. The command line is always the same, `curl.exe -K -`: the first start of a curl with an address
+-- on its command line took 266 and 311 ms on the game's thread in game (something inspects it), then 5 ms for the
+-- same command line; a curl -V took 9 ms (5-recon-3).
 local function spawn(entry)
+    local config = entry.warmup and '' or curl_config(entry)
+    if #config > CONFIG_MAX then return nil, 'line too long' end
     local k = native.k32
     local sa = ffi.new('BetterChatSA')
     sa.nLength, sa.bInheritHandle = ffi.sizeof(sa), 1
@@ -957,14 +1021,13 @@ local function spawn(entry)
     else
         list = nil
     end
-    -- -sS: errors only; -w: the HTTP status after the body. The command line holds only this mod's constants.
-    local command = string.format('"%s" -sS -m %d --max-filesize %d -G --data-urlencode q@- -w "\\n@@ %%{http_code}" '
-                                  .. '"%s%s"', translate.curl, CURL_TIMEOUT, REPLY_MAX, ENDPOINT, entry.target)
+    local command = '"' .. translate.curl .. '" -K -'
     local info = ffi.new('BetterChatProcessInfo')
     local t0 = now()
     local ok = k.better_chat_CreateProcessW(wide(translate.curl), wide(command), nil, nil, 1, flags, nil,
                                             wide(translate.dir), si, info)
     local spawn_ms = (now() - t0) * 1000
+    perf.spawn = perf.spawn + spawn_ms
     local err = ok == 0 and k.better_chat_GetLastError() or 0
     if list then k.better_chat_DeleteProcThreadAttributeList(list) end
     close(in_r[0]); close(out_w[0])
@@ -973,8 +1036,10 @@ local function spawn(entry)
         return nil, 'CreateProcess failed (error ' .. tostring(err) .. ')'
     end
     close(info.hThread)
-    local done = ffi.new('uint32_t[1]')
-    k.better_chat_WriteFile(in_w[0], entry.text, #entry.text, done, nil)  -- fits the pipe: never waits
+    if #config > 0 then
+        local done = ffi.new('uint32_t[1]')
+        k.better_chat_WriteFile(in_w[0], config, #config, done, nil)  -- fits the pipe: never waits
+    end
     close(in_w[0])
     translate.job = {entry = entry, process = info.hProcess, out = out_r[0], started = t0, spawn_ms = spawn_ms,
                      chunks = {}, size = 0}
@@ -1008,6 +1073,10 @@ local function finish(job, how)
     close(job.process); close(job.out)
     translate.job = nil
     local ms = (now() - job.started) * 1000
+    if entry.warmup then
+        note(string.format('Curl warm-up (%.0f ms, start %.1f ms): %s, exit %d', ms, job.spawn_ms, how, exit_code[0]))
+        return
+    end
     local out = table.concat(job.chunks)
     local at, _, status = out:find('\n@@ (%d+)%s*$')
     local body = at and out:sub(1, at - 1) or out
@@ -1072,6 +1141,15 @@ local function pump()
         if #translate.queue > 0 then translate.queue = {} end
         return
     end
+    -- curl's first start in a session may be slow (see spawn): it is done once, as soon as translation is on (while
+    -- the game loads, or in the menu where it was turned on), with a curl that sends nothing, so that no chat line
+    -- waits for it.
+    if not translate.warm then
+        translate.warm = true
+        local ok, why = spawn({warmup = true, text = ''})
+        if not ok then note('Curl warm-up not started: ' .. why) end
+        return
+    end
     local entry = translate.queue[1]
     if not entry or (entry.not_before and now() < entry.not_before) then return end
     table.remove(translate.queue, 1)
@@ -1085,11 +1163,13 @@ end
 local ring = {ctx = nil, first = 0, count = 0}
 local clock, last_sound, last_check = 0, -math.huge, -math.huge
 
-local function alert(others, total)
-    note(string.format('%d new chat line(s), %d from other players', total, others))
-    if others == 0 or options.sound == 1 then return end
+local function alert(others, mine, total)
+    note(string.format('%d new chat line(s), %d from other players, %d from you', total, others, mine))
+    -- The ship's choice everywhere but in missions.
+    local choice = game_mode() == MODE_MISSION and options.sound_mission or options.sound
+    if (others == 0 and not (options.sound_own and mine > 0)) or choice == 1 then return end
     if clock - last_sound >= COOLDOWN then
-        if play(options.sound, 'new message') then last_sound = clock end
+        if play(choice, 'new message') then last_sound = clock end
     else
         note('Sound skipped (cooldown)')
     end
@@ -1125,19 +1205,19 @@ local function watch_chat()
     if new <= 0 then return end
     new = math.min(new, RING_SIZE)
     local own = read(ctx + V.local_peer, 8)
-    local others = 0
+    local others, mine = 0, 0
     for k = new, 1, -1 do
         local slot = (first + count - k) % RING_SIZE
         local sender = read(chat + V.line_sender + slot * V.line_stride, 8)
         local text = read(chat + V.line_text + slot * V.line_stride, 0x200)
         local length = text and (text:find('\0', 1, true) or 0x201) - 1 or -1
         local from_other = sender ~= nil and own ~= nil and sender ~= own
-        if from_other then others = others + 1 end
+        if from_other then others = others + 1 elseif sender ~= nil and sender == own then mine = mine + 1 end
         note(string.format('Line %d: sender %s%s, %d bytes, flags %s', slot, hex(sender),
                            from_other and '' or ' (you)', length, line_flags(chat, slot)))
         if sender and length > 0 and (from_other or options.translate_own) then enqueue(sender, text:sub(1, length)) end
     end
-    alert(others, new)
+    alert(others, mine, new)
 end
 
 -- Adds the finished translations to the chat through the game's add-line (on this machine only), right after a
@@ -1197,7 +1277,26 @@ end
 -- Line breaks and tabs become spaces; other control characters and characters outside the Basic Multilingual
 -- Plane (emoji) are left out.
 
-local paste = {v_down = false}
+local paste = {v_down = false, open = false, checked = -math.huge}
+
+-- The chat's HUD widget, when the HUD is there.
+local function chat_widget()
+    local hud = pointer(read(native.base + V.hud, 8))
+    return hud and hud + V.chat_hud
+end
+
+local function input_open(widget)
+    local open = widget and read(widget + V.chat_open, 1)
+    return open ~= nil and open:byte() ~= 0
+end
+
+-- Whether the chat's text input is open, read every PASTE_CHECK_EVERY: the keys are read only while it is, because
+-- Windows' key state call took 4-15 ms on some frames in game, with the chat closed too (5-recon-3).
+local function check_input()
+    paste.checked = clock
+    paste.open = input_open(chat_widget())
+    if not paste.open then paste.v_down = false end
+end
 
 -- The foreground window is the game's (this process's).
 local function game_in_front()
@@ -1266,10 +1365,8 @@ local function paste_step()
     local pressed = v_down and not paste.v_down
     paste.v_down = v_down
     if not (pressed and u.better_chat_GetAsyncKeyState(0x11) < 0) then return end
-    local hud = pointer(read(native.base + V.hud, 8))
-    local widget = hud and hud + V.chat_hud
-    local open = widget and read(widget + V.chat_open, 1)
-    if not (open and open:byte() ~= 0) or not game_in_front() then return end
+    local widget = chat_widget()
+    if not input_open(widget) or not game_in_front() then return end
     local added, why = clipboard_text()
     if not added then note('Paste: ' .. why); return end
     local field = widget + V.chat_field
@@ -1297,6 +1394,7 @@ local function start()
         M.retired = true
         return
     end
+    init_clock()
     -- The game's Text Language, for this mod's texts and every other mod's (bingus_text's shared registry).
     local tag, game_code = T.observe(read, native.base)
     note('Text language: ' .. tostring(T.language()) .. ' (game setting ' .. tostring(game_code or 'unreadable')
@@ -1319,6 +1417,12 @@ local function start()
     end
 end
 
+local function timed(part, f)
+    local t0 = perf.now and perf.now()
+    f()
+    if t0 then perf[part] = perf[part] + (perf.now() - t0) * 1000 end
+end
+
 local function frame(dt)
     M.frames = M.frames + 1
     clock = clock + (tonumber(dt) or 0)
@@ -1330,23 +1434,45 @@ local function frame(dt)
     end
     if clock - last_check >= CHECK_EVERY then
         last_check = clock
-        watch_chat()
+        timed('chat', watch_chat)
     end
-    if features.paste == true then paste_step() end
+    if features.paste == true then
+        if clock - paste.checked >= PASTE_CHECK_EVERY then timed('paste', check_input) end
+        if paste.open then timed('paste', paste_step) end
+    end
     if features.translate == true then
-        pump()
-        if #translate.show > 0 then show_translations() end
+        timed('translate', pump)
+        if #translate.show > 0 then timed('show', show_translations) end
     end
     if features.scale == true and (scale_dirty or M.frames % SCALE_EVERY == 0) then
         scale_dirty = false
-        apply_scale()
+        timed('scale', apply_scale)
     end
+end
+
+-- An update slower than SLOW_UPDATE is logged with its parts (each part includes the sound, curl start and log
+-- writes it made; "other" is the rest: start-up, the code search, connecting to Mod Options Menu).
+local function report_slow(ms)
+    perf.slow = perf.slow + 1
+    if perf.slow > SLOW_LOG_MAX then return end
+    local other = ms - perf.chat - perf.paste - perf.translate - perf.show - perf.scale
+    note(string.format('Slow update: %.1f ms (chat %.1f, paste %.1f, translate %.1f, show %.1f, scale %.1f, other %.1f;'
+                       .. ' inside them: sound %.1f, curl start %.1f, log %.1f in %d lines)%s', ms, perf.chat,
+                       perf.paste, perf.translate, perf.show, perf.scale, other, perf.sound, perf.spawn, perf.log,
+                       perf.log_lines, perf.slow == SLOW_LOG_MAX and '; no more slow updates logged' or ''))
 end
 
 local original_update = rawget(_G, 'update')
 update = function(dt, ...)
     if not M.retired then
+        local t0 = perf.now and perf.now()
+        perf.chat, perf.paste, perf.translate, perf.show, perf.scale = 0, 0, 0, 0, 0
+        perf.sound, perf.spawn, perf.log, perf.log_lines = 0, 0, 0, 0
         local ok, err = xpcall(frame, debug.traceback, dt)
+        if t0 then
+            local ms = (perf.now() - t0) * 1000
+            if ms > SLOW_UPDATE then report_slow(ms) end
+        end
         if not ok then
             M.errors = M.errors + 1
             note('Error: ' .. tostring(err))
@@ -1363,5 +1489,5 @@ note('Better Chat ' .. M.version .. ' loaded')
 M._test = {values = function() return V end, features = function() return features end,
            options = function() return options end, json = function(s) return (json_value(s)) end, google_code = google_code,
            reread_windows = function() translate.region, translate.display = windows_languages() end,
-           translate = translate}  -- offline checks
+           translate = translate, perf = perf}  -- offline checks
 return M

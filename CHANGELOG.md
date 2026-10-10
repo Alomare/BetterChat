@@ -2,6 +2,15 @@
 
 Releases are named "Better Chat V&lt;n&gt;" (tag `v<n>`). Each section is that release's notes.
 
+## V5 (2026-10-10)
+
+- Split New Message Sound into Sound Alert in Ship and Sound Alert in Mission. Sound Alert in Ship keeps your current choice; Sound Alert in Mission starts at Player Joined.
+- Added two sounds to Sound Alert in Mission: Reinforce Request and Countdown.
+- Added Sound Alert on My Messages, off by default: your own messages also play the sound, to try the sounds alone.
+- Fixed a short freeze when a translation started, mostly on the first translated message.
+- Fixed small stutters caused by the paste shortcut while playing.
+- Translated the new settings into every game language.
+
 ## V4 (2026-10-06)
 
 - Added five louder choices to New Message Sound: Menu Confirm, Menu Back, Action Wheel, Item Purchase and Confirmation Dialog.

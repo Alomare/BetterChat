@@ -118,6 +118,7 @@ k32.better_chat_CreateProcessW = function(app, cmd, pa, ta, inherit, flags, env,
                private = H(si.StartupInfo.hStdInput).private or H(si.StartupInfo.hStdOutput).private}
     fake.processes[#fake.processes + 1] = p
     info.hProcess = new_handle({process = p}); info.hThread = new_handle({})
+    fake.qpc = fake.qpc + (fake.spawn_cost or 0)
     return 1
 end
 k32.better_chat_WriteFile = function(h, buf, n, done)
@@ -163,7 +164,10 @@ end
 k32.better_chat_GlobalSize = function(h) return (#fake.clipboard + 1) * 2 end
 k32.better_chat_GlobalUnlock = function(h) fake.unlocked = (fake.unlocked or 0) + 1; return 1 end
 user32 = {
-    better_chat_GetAsyncKeyState = function(key) return fake.held[key] and -32768 or 0 end,
+    better_chat_GetAsyncKeyState = function(key)
+        fake.key_reads = (fake.key_reads or 0) + 1
+        return fake.held[key] and -32768 or 0
+    end,
     better_chat_GetForegroundWindow = function() return fake.foreground and ffi.cast('void *', fake.foreground) or nil end,
     better_chat_GetWindowThreadProcessId = function(w, pid) pid[0] = fake.window_pid; return 1 end,
     better_chat_PostMessageW = function(w, message, wparam, lparam)
@@ -187,7 +191,10 @@ package.loaded.ffi = setmetatable({
     cast = function(t, v)
         if t == 'BetterChatSound' then
             local rva = tonumber(v) - BASE
-            return function(unused, id) fake.calls[#fake.calls + 1] = string.format('sound %x %x', rva, id) end
+            return function(unused, id)
+                fake.calls[#fake.calls + 1] = string.format('sound %x %x', rva, id)
+                fake.qpc = fake.qpc + (fake.sound_cost or 0)
+            end
         end
         if t == 'BetterChatSetVec' then
             local rva = tonumber(v) - BASE
@@ -374,14 +381,23 @@ def run():
     order = f2.order.split()
     s = f2.specs
     sound = s['alomare.better_chat.sound']
-    check(order == ['alomare.better_chat.' + n for n in ('sound', 'scale', 'translate', 'translate_to', 'translate_own')],
+    check(order == ['alomare.better_chat.' + n for n in ('sound', 'sound_mission', 'sound_own', 'scale', 'translate', 'translate_to', 'translate_own')],
           'options registered in order (no paste option): %r' % order)
     names = [sound.choices[i]() for i in range(2, 12)]
     check(sound.type == 'choice' and sound.choices[1] == 'OFF' and len(sound.choices) == 11
           and names == ['Player Joined', 'Player Left', 'Menu Tab', 'Menu Subtab', 'Option Click', 'Menu Confirm',
                         'Menu Back', 'Action Wheel', 'Item Purchase', 'Confirmation Dialog']
-          and sound.default == 2 and sound.label() == 'New Message Sound' and sound.mod() == 'Better Chat'
+          and sound.default == 2 and sound.label() == 'Sound Alert in Ship' and sound.mod() == 'Better Chat'
           and sound.mod_id == 'alomare.better_chat', 'sound choice: OFF + the game sounds, texts as functions')
+    mission = s['alomare.better_chat.sound_mission']
+    check(mission.type == 'choice' and len(mission.choices) == 13 and mission.default == 2
+          and [mission.choices[i]() for i in range(2, 12)] == names
+          and [mission.choices[i]() for i in (12, 13)] == ['Reinforce Request', 'Countdown']
+          and mission.label() == 'Sound Alert in Mission',
+          'mission sound choice: the same sounds, then the two only the mission bank has')
+    own = s['alomare.better_chat.sound_own']
+    check(own.type == 'toggle' and own.default is False and own.label() == 'Sound Alert on My Messages',
+          'own messages toggle: off by default')
     sc = s['alomare.better_chat.scale']
     check(sc.type == 'slider' and sc.min == 50 and sc.max == 200 and sc.step == 5 and sc.default == 100
           and not sc.gap          and sc.label() == 'Chat Size (%)', 'size slider: 50-200% in steps of 5, 100 by default')
@@ -395,11 +411,66 @@ def run():
         f2.calls = lua2.table()
         lua2.execute('fake.changed["alomare.better_chat.sound"](%d)' % choice)
         check(list(f2.calls.values()) == ['sound 1327f50 %x' % want], 'picking %s plays it once (preview)' % what)
+    for choice, want, what in ((12, 0x4a300afb, 'reinforce request'), (13, 0x9da28dab, 'countdown')):
+        f2.calls = lua2.table()
+        lua2.execute('fake.changed["alomare.better_chat.sound_mission"](%d)' % choice)
+        check(list(f2.calls.values()) == ['sound 1327f50 %x' % want], 'picking %s for missions plays it once (preview)' % what)
+    lua2.execute('fake.changed["alomare.better_chat.sound"](12)')
+    check('Option sound = 2' in log2(), 'the ship option has no mission-only sound: index 12 falls back to the default')
+    lua2.execute('fake.changed["alomare.better_chat.sound"](6)')
     lua2.execute('update(3.0)')
     f2.calls = lua2.table()
     w2.add(OTHER)
     lua2.execute('update(0.25)')
     check(list(f2.calls.values()) == ['sound 1327f50 %x' % OPTION], 'the picked sound plays for new messages')
+    check('Slow update' not in log2(), 'normal updates are not logged as slow')
+    lua2.execute('update(3.0)')
+    w2.add(OTHER)
+    lua2.execute('fake.sound_cost = 12; update(0.25); fake.sound_cost = 0')
+    check('Slow update: 12.0 ms (chat 12.0, paste 0.0, translate 0.0, show 0.0, scale 0.0, other 0.0; '
+          'inside them: sound 12.0, curl start 0.0, log 0.0 in 3 lines)' in log2(),
+          'a slow sound call is logged as a slow update with what took the time')
+    # In a mission the mission's choice plays, not the ship's.
+    lua2.execute('fake.changed["alomare.better_chat.sound_mission"](7); update(3.0)')
+    w2.mode(4)
+    w2.push_all()
+    f2.calls = lua2.table()
+    w2.add(OTHER)
+    lua2.execute('update(0.25)')
+    check(list(f2.calls.values()) == ['sound 1327f50 %x' % 0x7a69c309], "in a mission: the mission option's sound")
+    w2.mode(3)
+    w2.push_all()
+    lua2.execute('update(3.0)')
+    f2.calls = lua2.table()
+    w2.add(OTHER)
+    lua2.execute('update(0.25)')
+    check(list(f2.calls.values()) == ['sound 1327f50 %x' % OPTION], "back on the ship: the ship option's sound")
+    # Your own lines: quiet unless Sound Alert on My Messages is on.
+    lua2.execute('update(3.0)')
+    f2.calls = lua2.table()
+    w2.add(OWN)
+    lua2.execute('update(0.25)')
+    check(len(f2.calls) == 0 and '1 new chat line(s), 0 from other players, 1 from you' in log2(),
+          'your own line, own messages off: no sound')
+    lua2.execute('fake.changed["alomare.better_chat.sound_own"](true)')
+    check(len(f2.calls) == 0, 'turning own messages on plays nothing')
+    w2.add(OWN)
+    lua2.execute('update(0.25)')
+    check(list(f2.calls.values()) == ['sound 1327f50 %x' % OPTION], 'your own line, own messages on: the sound')
+    lua2.execute('update(3.0)')
+    w2.mode(4)
+    w2.push_all()
+    f2.calls = lua2.table()
+    w2.add(OWN)
+    lua2.execute('update(0.25)')
+    check(list(f2.calls.values()) == ['sound 1327f50 %x' % 0x7a69c309], "your own line in a mission: the mission option's sound")
+    w2.mode(3)
+    w2.push_all()
+    lua2.execute('fake.changed["alomare.better_chat.sound_own"](false); update(3.0)')
+    f2.calls = lua2.table()
+    w2.add(OWN)
+    lua2.execute('update(0.25)')
+    check(len(f2.calls) == 0, 'own messages off again: no sound')
     # Size: scaled from the widget's own scale once it is laid out.
     f2.calls = lua2.table()
     lua2.execute('fake.changed["alomare.better_chat.scale"](150); update(0.016)')
@@ -423,7 +494,7 @@ def run():
     lua3.execute(SOURCE)
     lua3.execute('update(0.016)')
     s3 = lua3.globals().fake.specs['alomare.better_chat.sound']
-    check(s3.label == 'New Message Sound' and s3.choices[4] == 'Menu Tab', 'v1.0: texts as strings')
+    check(s3.label == 'Sound Alert in Ship' and s3.choices[4] == 'Menu Tab', 'v1.0: texts as strings')
 
     # --- set_scale moved out of reach: only the size is off.
     logdir4 = Path(tempfile.mkdtemp())
@@ -489,6 +560,7 @@ def run_paste(check):
     def chat(is_open):
         w.hud[open_at] = 1 if is_open else 0
         f.heap(HUD, bytes(w.hud))
+        lua.execute('update(0.1)')  # the open flag is read every 100 ms
 
     def field_text(text):
         w.hud[text_at:text_at + 0x325] = text.ljust(0x325, b'\0')
@@ -514,6 +586,9 @@ def run_paste(check):
 
     clipboard('hello\r\nworld\tok \U0001F600 été  ')
     chat(False)
+    f.key_reads = 0
+    lua.execute('for i = 1, 60 do update(0.016) end')
+    check(f.key_reads == 0, 'chat closed: no key state read in 60 frames (%d)' % f.key_reads)
     ctrl_v()
     check(not set_calls() and not f.opened, 'Ctrl+V with the chat closed: nothing (the clipboard is not read)')
     chat(True)
@@ -598,14 +673,15 @@ def run_translate_to(check):
           'Translate To: Automatic (default), game language, 13 languages: %r' % names)
     check('Windows: regional format pt-BR, display language en-US (Automatic: pt)' in log(),
           "Windows' regional format and display language read")
+    finish_warmup(lua, f, log, check, 'saved on: at load')
 
     def target(line):
         w.add(OTHER, line)
         lua.execute('update(0.25)')
-        cmd = f.processes[len(f.processes)].cmd
+        url = curl_options(f.processes[len(f.processes)])['url']
         f.reply(len(f.processes), google('x', 'en'))
         lua.execute('update(0.016)')
-        return cmd.rsplit('tl=', 1)[1].rstrip('"')
+        return url.rsplit('tl=', 1)[1]
 
     check(target(b'hello there') == 'pt', 'Automatic: the regional format (pt-BR) wins over an English Windows')
     f.region = None
@@ -627,6 +703,63 @@ def run_translate_to(check):
     check(codes == {'pt-BR': 'pt', 'pt-PT': 'pt-PT', 'pt': 'pt', 'zh-CN': 'zh-CN', 'zh-Hant-TW': 'zh-TW', 'zh-HK': 'zh-TW',
                     'zh-SG': 'zh-CN', 'es-419': 'es', 'nl-NL': 'nl', 'en-US': 'en', 'fil-PH': 'fil'},
           'language tags to Google codes: %r' % codes)
+
+
+def curl_config(data):
+    """curl's config (-K) as curl reads it: one option per line, `name = value` or a bare name; a value in quotes
+    ends at the first unescaped quote, with \\\\, \\", \\n, \\t, \\r, \\v escapes (a backslash before anything else is
+    dropped). Returns [(name, value or None, what follows a quoted value)]: anything after the closing quote is how
+    a line could smuggle in more."""
+    out = []
+    for line in data.split('\n'):
+        line = line.lstrip(' \t')
+        if not line or line[0] == '#':
+            continue
+        i = 0
+        while i < len(line) and line[i] not in ' \t=:':
+            i += 1
+        name, rest = line[:i], line[i:].lstrip(' \t')
+        if rest[:1] in ('=', ':'):
+            rest = rest[1:].lstrip(' \t')
+        if not rest:
+            out.append((name, None, ''))
+        elif rest[0] == '"':
+            value, j, esc = [], 1, {'t': '\t', 'n': '\n', 'r': '\r', 'v': '\v'}
+            while j < len(rest) and rest[j] != '"':
+                if rest[j] == '\\' and j + 1 < len(rest):
+                    j += 1
+                    value.append(esc.get(rest[j], rest[j]))
+                else:
+                    value.append(rest[j])
+                j += 1
+            out.append((name, ''.join(value), rest[j + 1:]))
+        else:
+            out.append((name, rest.split()[0], ' '.join(rest.split()[1:])))
+    return out
+
+
+def curl_options(p):
+    """A started curl's options: its command line must be the constant one; the rest is the config on its input."""
+    assert p.cmd == '"C:\\Windows\\system32\\curl.exe" -K -', p.cmd
+    return {name: value for name, value, _ in curl_config(p.stdin.data)}
+
+
+def finish_warmup(lua, f, log, check, when, start_ms=0):
+    """The curl warm-up, started once translation is on: checked and answered, then taken out of the fake process list
+    (its handles out of the count), so that the tests number the translation processes from 1."""
+    w = f.processes[1] if len(f.processes) == 1 else None
+    check(w is not None and w.cmd == '"C:\\Windows\\system32\\curl.exe" -K -' and w.stdin.data == ''
+          and w.flags == 0x08000000 + 0x80000 and not w.private,
+          'translation on (%s): one curl first, the same command line, an empty config (nothing sent), '
+          'no chat line started before it' % when)
+    if w is None:
+        return
+    w.stdout.data = 'curl: no URL specified!'
+    w.exit = 2
+    lua.execute('update(0.016)')
+    check('Curl warm-up (%d ms, start %.1f ms): done, exit 2' % (start_ms, start_ms) in log() and 'no URL' not in log(),
+          'the warm-up is logged with its start time, not its output')
+    lua.execute('table.remove(fake.processes, 1); fake.closed = 0')
 
 
 def google(text, source):
@@ -664,15 +797,24 @@ def run_translation(check):
     target = re.search(r'Text language: (\S+)', log()).group(1)
     tl = {'pt-BR': 'pt', 'zh-Hans': 'zh-CN'}.get(target, target)
     w.add(OTHER, 'hola amigos, ¿qué tal? "extracción" & ya'.encode('utf-8'))
-    lua.execute('update(0.25)')
+    lua.execute('fake.spawn_cost = 266; update(0.25); fake.spawn_cost = 0')
+    check('Slow update: 266.0 ms (chat 0.0, paste 0.0, translate 266.0, show 0.0, scale 0.0, other 0.0; '
+          'inside them: sound 0.0, curl start 266.0, log ' in log(),
+          'a slow curl start is logged as a slow update, in its part')
+    finish_warmup(lua, f, log, check, 'in the menu', 266)
+    lua.execute('update(0.016)')
     p = f.processes[1] if len(f.processes) == 1 else None
     check(p is not None, 'translation on: a line from another player starts one curl')
-    check(p.app == 'C:\\Windows\\system32\\curl.exe' and p.dir == 'C:\\Windows\\system32'
-          and p.cmd == '"C:\\Windows\\system32\\curl.exe" -sS -m 8 --max-filesize 131072 -G --data-urlencode q@- '
-                       '-w "\\n@@ %{http_code}" '
-                       '"https://translate.googleapis.com/translate_a/single?client=gtx&dt=t&sl=auto&tl=' + tl + '"',
-          'curl command line: constants only, the target language from the Text Language: %r' % (p and p.cmd))
-    check(p.stdin.data == 'hola amigos, ¿qué tal? "extracción" & ya', 'the line goes to curl through its standard input')
+    check(p.app == 'C:\\Windows\\system32\\curl.exe' and p.dir == 'C:\\Windows\\system32' and p.cmd == '"C:\\Windows\\system32\\curl.exe" -K -',
+          'curl command line: always the same, no address: %r' % (p and p.cmd))
+    config = curl_config(p.stdin.data)
+    check(config == [('silent', None, ''), ('show-error', None, ''), ('max-time', '8', ''),
+                     ('max-filesize', '131072', ''), ('get', None, ''),
+                     ('data-urlencode', 'q=hola amigos, ¿qué tal? "extracción" & ya', ''),
+                     ('write-out', '\n@@ %{http_code}', ''),
+                     ('url', 'https://translate.googleapis.com/translate_a/single?client=gtx&dt=t&sl=auto&tl=' + tl, '')],
+          'the request in the config on standard input: the line, the target language from the Text Language: %r'
+          % config)
     check(p.flags == 0x08000000 + 0x80000 and f.handle_list and not p.private,
           'no window, a handle list, the child gets only its own pipe ends')
     n_lines = log().count('new chat line(s)')
@@ -724,7 +866,8 @@ def run_translation(check):
     check(len(f.processes) == 5, 'one curl at a time')
     f.reply(5, google('one', 'es'))
     lua.execute('update(0.016); update(0.016)')
-    check(len(f.processes) == 6 and f.processes[6].stdin.data == 'segundo', 'the next line starts after the reply')
+    check(len(f.processes) == 6 and curl_options(f.processes[6])['data-urlencode'] == 'q=segundo',
+          'the next line starts after the reply')
 
     # Errors: an HTTP error and a curl that hangs are logged; nothing is shown.
     shown = len([c for c in f.calls.values() if c.startswith('line ')])
@@ -766,7 +909,8 @@ def run_translation(check):
     check(len(f.processes) == 10 and 'Translation 10 will be retried' in log(), 'a 500 waits a second before the retry')
     lua.eval('function(s) fake.qpc = fake.qpc + 1000 end')(0)
     lua.execute('update(0.016)')
-    check(len(f.processes) == 11 and f.processes[11].stdin.data == 'cinco', 'the retry sends the same line')
+    check(len(f.processes) == 11 and curl_options(f.processes[11])['data-urlencode'] == 'q=cinco',
+          'the retry sends the same line')
     f.reply(11, 'Server Error', '500')
     lua.eval('function(s) fake.qpc = fake.qpc + 2000 end')(0)
     lua.execute('update(0.016); update(0.016); update(0.016)')
@@ -788,6 +932,29 @@ def run_translation(check):
     lua.execute('fake.changed["alomare.better_chat.translate"](false); update(0.25); update(0.016); update(0.016)')
     check(len(f.processes) == 12, 'translation turned off: nothing more is started')
     check(f.closed == 6 * 12, 'every handle of every curl closed: %d' % f.closed)
+    lua.execute('fake.changed["alomare.better_chat.translate"](true); update(0.016)')
+    w.add(OTHER, b'otra vez')
+    lua.execute('update(0.25)')
+    check(len(f.processes) == 13 and curl_options(f.processes[13])['data-urlencode'] == 'q=otra vez'
+          and log().count('Curl warm-up') == 1,
+          'translation on again: no second warm-up, the line starts at once')
+    f.reply(13, google('again', 'es'))
+    lua.execute('update(0.016)')
+
+    # A line written to end its value and add options to curl's config stays one value.
+    for hostile in (b'x" output = "C:\\evil.txt', b'a\\" -o C:\\x \\', b'tab\there\nurl = "http://evil"\r\x7f end\\'):
+        w.add(OTHER, hostile)
+        lua.execute('update(0.25)')
+        q = len(f.processes)
+        config = curl_config(f.processes[q].stdin.data)
+        names = [c[0] for c in config]
+        sent = dict((c[0], c[1]) for c in config)['data-urlencode']
+        want = 'q=' + ''.join(' ' if ch < ' ' or ch == '\x7f' else ch for ch in hostile.decode('utf-8'))
+        check(names == ['silent', 'show-error', 'max-time', 'max-filesize', 'get', 'data-urlencode', 'write-out', 'url']
+              and all(c[2] == '' for c in config) and sent == want,
+              'a line with quotes, backslashes or control characters stays one value: %r' % config)
+        f.reply(q, google('x', 'es'))
+        lua.execute('update(0.016)')
 
     # The JSON reader: escapes, surrogate pairs, nulls, objects.
     js = M._test.json
