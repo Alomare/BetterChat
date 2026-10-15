@@ -31,5 +31,13 @@ return {
         ['choice.game'] = '遊戲語言',
         ['option.translate_own.label'] = '翻譯我的訊息',
         ['option.translate_own.description'] = '同時翻譯你自己的訊息，方便你獨自試用翻譯。只有你看得到譯文。',
+        ['option.translate_service.label'] = '翻譯服務',
+        ['option.translate_service.description'] = '選擇用哪個服務翻譯聊天。Google 是免費的免金鑰服務。自訂使用相容 OpenAI 的 Chat Completions API：在日誌目錄旁的 BetterChat.custom.json 中填寫位址、金鑰和模型，然後選擇並套用本選項以重新載入。僅訊息文字會傳送給所選服務。',
+        ['choice.service.google'] = 'Google 翻譯',
+        ['choice.service.custom'] = '自訂（相容 OpenAI）',
+        ['option.broadcast.label'] = '外發翻譯',
+        ['option.broadcast.description'] = '在傳送前翻譯你自己的訊息：你按下 Enter 時，原文會被清空，只有譯文發給全隊。翻譯失敗時改發原文，避免訊息遺失。僅訊息文字會傳送給所選翻譯服務。',
+        ['option.broadcast_to.label'] = '外發語言',
+        ['option.broadcast_to.description'] = '你的外發訊息被翻譯成的語言。英文是小隊最常用的語言。遊戲語言使用遊戲的文字語言。',
     },
 }
