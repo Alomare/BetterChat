@@ -28,8 +28,8 @@ SPECS = [
     # The chat box's send (inside the HUD chat update 0x185fd10): the network context global, the chat inside it
     # (context + chat), the UI sound function and the chat's own send sound.
     {'name': 'chat_send', 'start': 0x186025d, 'end': 0x1860281,
-     'fields': {'context': (0x347cef0, 'rip'), 'chat': (0xc418, 'u32'), 'ui_sound': (0x1327f50, 'call'),
-                'send_sound': (0xe1ba68c0, 'u32')}},
+     'fields': {'context': (0x347cef0, 'rip'), 'chat': (0xc418, 'u32'), 'send_fn': (0x1097560, 'call'),
+                'ui_sound': (0x1327f50, 'call'), 'send_sound': (0xe1ba68c0, 'u32')}},
     # The chat's add-line (0x10979c0), every received and sent line goes through it: the local peer id in the
     # context, the history ring's first index and line count (64 lines), the line stride.
     {'name': 'chat_ring', 'start': 0x10979dc, 'end': 0x1097ac3,

@@ -31,5 +31,13 @@ return {
         ['choice.game'] = '游戏语言',
         ['option.translate_own.label'] = '翻译我的消息',
         ['option.translate_own.description'] = '同时翻译你自己的消息，方便你独自试用翻译。只有你能看到译文。',
+        ['option.translate_service.label'] = '翻译服务',
+        ['option.translate_service.description'] = '选择用哪个服务翻译聊天。Google 是免费的免密钥服务。自定义使用兼容 OpenAI 的 Chat Completions API：在日志目录旁的 BetterChat.custom.json 中填写地址、密钥和模型，然后选择并应用本选项以重新加载。仅消息文本会发送给所选服务。',
+        ['choice.service.google'] = '谷歌翻译',
+        ['choice.service.custom'] = '自定义（兼容 OpenAI）',
+        ['option.broadcast.label'] = '外发翻译',
+        ['option.broadcast.description'] = '在发送前翻译你自己的消息：你按下回车时，原文会被清空，只有译文发给全队。翻译失败时改发原文，避免消息丢失。仅消息文本会发送给所选翻译服务。',
+        ['option.broadcast_to.label'] = '外发语言',
+        ['option.broadcast_to.description'] = '你的外发消息被翻译成的语言。英语是小队最常用的语言。游戏语言使用游戏的文本语言。',
     },
 }

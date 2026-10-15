@@ -55,6 +55,17 @@ return {
         -- A toggle: also translates the player's own messages.
         ['option.translate_own.label'] = 'Translate My Messages',
         ['option.translate_own.description'] = 'Also translates your own messages, so you can try translation alone. Only you see the translations.',
+        -- A choice: which service translates the chat.
+        ['option.translate_service.label'] = 'Translation Service',
+        ['option.translate_service.description'] = 'Which service translates the chat. Google is the free keyless service. Custom uses an OpenAI-compatible Chat Completions API: put the address, key and model in BetterChat.custom.json next to the logs, then pick and apply this option to reload it. Only the message text is sent, to the chosen service only.',
+        ['choice.service.google'] = 'Google Translate',
+        ['choice.service.custom'] = 'Custom (OpenAI-compatible)',
+        -- A toggle: translate the player's own messages before they are sent, so only the translation goes out.
+        ['option.broadcast.label'] = 'Outbound Translation',
+        ['option.broadcast.description'] = 'Translates your own messages before they are sent: as you press Enter, your original text is cleared and only the translation is sent to the squad. If the translation fails, your original is sent instead, so no message is lost. Only the message text is sent to the chosen translation service.',
+        -- A choice: the language the outbound message is translated into.
+        ['option.broadcast_to.label'] = 'Outbound Language',
+        ['option.broadcast_to.description'] = 'The language your outbound messages are translated into. English is the language a squad most often shares. Game Language uses the game\'s Text Language.',
     },
     -- Mod Options Menu's limits, in characters.
     limits = {
@@ -87,5 +98,13 @@ return {
         ['choice.game'] = 48,
         ['option.translate_own.label'] = 64,
         ['option.translate_own.description'] = 400,
+        ['option.translate_service.label'] = 64,
+        ['option.translate_service.description'] = 400,
+        ['choice.service.google'] = 48,
+        ['choice.service.custom'] = 48,
+        ['option.broadcast.label'] = 64,
+        ['option.broadcast.description'] = 400,
+        ['option.broadcast_to.label'] = 64,
+        ['option.broadcast_to.description'] = 400,
     },
 }

@@ -255,3 +255,37 @@ The user saw no stutter; translation and paste worked in every case. From the lo
 - Sound Alert in Ship (`sound`, keeps the V4 value) and Sound Alert in Mission (`sound_mission`); the mission one adds Reinforce Request (`0x4a300afb`) and Countdown (`0x9da28dab`), only in the missions' bank. Sound Alert on My Messages (`sound_own`), off by default.
 - curl's command line is always `curl.exe -K -` (the request as a config on its input), with one start in advance when translation is on; paste reads the keys only while the chat's input is open. `Slow update` lines (over 4 ms, at most 40 per session) stay as diagnostics.
 - Not in V5: Vietnamese translations show `?` for the letters the game's chat font lacks (todo.txt).
+
+## Outbound translation (offline, 2026-10-16): replace mode, not live-verified
+
+Request: bidirectional translation. Inbound exists (V3: others' lines translated and shown locally). Outbound is new:
+intercept a message the player sends, translate it, and send only the translation to the whole squad, through the
+game's own chat send.
+
+- **The send.** The chat box's send is `0x1097560(chat, 0, text)`; the mod already matched its call site as
+  `chat_send` at `0x186025d` (the first `E8` there, right after `add rcx, 0xc418`, with `r8 = [rdi + 0x16d4]` being
+  the field's text). A `send_fn` field is read from that call (`{'call', {22}, {26}}`), so no new code signature is
+  needed and the mod still writes no game memory. This is the same send the HD2-AutoChat reference uses
+  (`SEND_RVA 0x1097560`, `void (*)(uint64_t, int, const char *)`).
+- **Intercept.** `intercept_step()` reads the Enter key only while the chat's input is open (the paste pattern), reads
+  the field's current text, and clears it with the game's own text setter, so the game's own send then sees an empty
+  field. The translation (or the original, when the translation fails) is queued and sent later by `deliver()` through
+  `send(chat, 0, text)`; the ring header is then re-read as the baseline, so the sent line is never treated as new.
+- **The one unverifiable bit (live-check).** Whether the field is cleared *before* the game's text-field update sends
+  it in the same frame depends on this update running first. Offline this cannot be decided. If the order is wrong,
+  the original goes out anyway and the ring shows it; `watch_chat` then marks the pending entry as cancelled and the
+  translation is not sent (no duplicate), but that message ends up untranslated. This must be confirmed in game.
+- **Fallback.** If the translation fails, times out, is the same language or equals the original, the original is sent
+  instead, so a message is never lost. Short ASCII lines ("gg", "ez", "o7") are not intercepted at all and reach the
+  game unchanged.
+- **Offline test.** `tests/test_outbound_intercept.py` fabricates a game.dll image from the mod's own SIGS table (PE
+  header, code/data sections, field values encoded into the wildcard bytes) and drives the real `better_chat.lua`
+  under LuaJIT with fake kernel32/user32/curl. It proves, without the game: the field is cleared on the Enter edge,
+  the translation is the only text sent, a lost race sends nothing (no duplicate), and a failed translation sends the
+  original. It does not decide the Enter-frame ordering - that is the one thing still pending in game.
+
+## V7 (unreleased)
+
+- Outbound Translation (`broadcast`, off) and Outbound Language (`broadcast_to`, default English): intercept, translate
+  and send only the translation, with the original as a fallback. Not live-verified yet: the Enter-frame ordering
+  above must be confirmed in game.
