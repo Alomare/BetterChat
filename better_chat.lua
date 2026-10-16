@@ -32,7 +32,7 @@ if rawget(_G, 'BetterChat') then return end
 
 local ffi = require('ffi')
 
-local M = {version = '7', frames = 0, errors = 0}
+local M = {version = '6', frames = 0, errors = 0}
 rawset(_G, 'BetterChat', M)
 
 local loader = rawget(_G, 'CowboyBingusModLoader')

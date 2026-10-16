@@ -3,7 +3,7 @@
     "guid": "b3ffcb44-9d18-4101-8b1b-8c3ff34e0ce9",
     "displayName": "Better Chat",
     "entry": "better_chat.lua",
-    "version": "7",
+    "version": "6",
     "icon": "icon.png",
     "description": "In-game chat quality of life: live translations, sound alerts and size settings. Settings in Mod Options Menu (escape menu > MODS).",
     "requires": [

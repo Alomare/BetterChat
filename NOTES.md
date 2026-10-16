@@ -284,7 +284,7 @@ game's own chat send.
   the translation is the only text sent, a lost race sends nothing (no duplicate), and a failed translation sends the
   original. It does not decide the Enter-frame ordering - that is the one thing still pending in game.
 
-## V7 (unreleased)
+## V6 (unreleased)
 
 - Outbound Translation (`broadcast`, off) and Outbound Language (`broadcast_to`, default English): intercept, translate
   and send only the translation, with the original as a fallback. Not live-verified yet: the Enter-frame ordering
