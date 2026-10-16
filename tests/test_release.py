@@ -221,6 +221,14 @@ package.loaded.ffi = setmetatable({
                 if fake.on_add_line then fake.on_add_line(tostring(sender), text) end
             end
         end
+        if t == 'BetterChatSend' then
+            local rva = tonumber(v) - BASE
+            return function(chat, unused, text)
+                assert(type(text) == 'string' and #text <= 0x200, 'send text over 0x200 bytes')
+                fake.calls[#fake.calls + 1] = string.format('send %x %x %s', rva, chat, text)
+                if fake.on_send then fake.on_send(chat, text) end
+            end
+        end
         return real_ffi.cast(t, v)
     end}, {__index = real_ffi})
 -- Mod Options Menu (installed by tests that set ModOptionsMenu = fake.menu).
@@ -309,7 +317,7 @@ def run():
     log = lambda: (logdir / 'BetterChat.log').read_text(encoding='utf-8')
     status = lambda: (logdir / 'BetterChat_STATUS.log').read_text(encoding='utf-8')
     check(M.ready, 'ready: every signature at its rva, values read')
-    check('Ready: chat = context + 0xc418, ring at +0x9590 (stride 0x228, sender +0xb98); sound ready, scale ready, translate ready, show ready, paste ready; '
+    check('Ready: chat = context + 0xc418, ring at +0x9590 (stride 0x228, sender +0xb98); sound ready, scale ready, translate ready, show ready, send ready, paste ready; '
           'sounds: joined 0xda653421/0x82250982, left 0xc386a64a/0x03cf15e0, '
           'tab 0xadd37058/0xadd37058, subtab 0x468c8e58/0x468c8e58, option 0x144418d5/0x144418d5, '
           'confirm 0x7a69c309, back 0x96c8c848, wheel 0x22200946, purchase 0xa1af099e, dialog 0xd8fc9d33' in log(),
@@ -381,7 +389,9 @@ def run():
     order = f2.order.split()
     s = f2.specs
     sound = s['alomare.better_chat.sound']
-    check(order == ['alomare.better_chat.' + n for n in ('sound', 'sound_mission', 'sound_own', 'scale', 'translate', 'translate_to', 'translate_own')],
+    check(order == ['alomare.better_chat.' + n for n in ('sound', 'sound_mission', 'sound_own', 'scale', 'translate',
+                                                          'translate_to', 'translate_own', 'translate_service',
+                                                          'broadcast', 'broadcast_to')],
           'options registered in order (no paste option): %r' % order)
     names = [sound.choices[i]() for i in range(2, 12)]
     check(sound.type == 'choice' and sound.choices[1] == 'OFF' and len(sound.choices) == 11
