@@ -11,6 +11,8 @@ A Helldivers 2 Lua mod for [Bingus Shared Loader](https://github.com/CowboyBingu
 - **Chat Size (%):** from 50 to 200% (default 100), makes the text chat and its text bigger or smaller.
 - **Paste (Ctrl+V):** while you type in the chat, Ctrl+V adds the copied text after what you already typed, up to the chat's own length limit. Line breaks become spaces; emoji are left out.
 - **Translate Chat (highly experimental):** off by default. See [Chat translation](#chat-translation-highly-experimental) below.
+- **Translation Service:** Google Translate (default), or a custom OpenAI-compatible service (any Chat Completions API) with your own address, key and model. See [Translation service](#translation-service) below.
+- **Outbound Translation (only the translation is sent):** off by default. Turns the translation two-way: your own messages are translated and only the translation goes to the squad. See [Outbound translation](#outbound-translation) below.
 - The settings are in [Mod Options Menu](https://github.com/CowboyBingus/ModOptionsMenu) (escape menu > MODS > Better Chat). Without it, the Player Joined sound plays, the chat keeps the game's size, paste works and translation stays off.
 - The settings' names follow the game's Text Language.
 
@@ -32,6 +34,29 @@ When **Translate Chat** is on, each message from another player is translated, a
 - Machine translation of short, slangy chat can be wrong or odd.
 - It needs `curl.exe`, which Windows 10 (version 1803 and later) and Windows 11 include. It does not work on Linux or Steam Deck (Proton).
 - It has been tested by a few players only.
+
+### Translation service
+
+Which service does the translating, set with **Translation Service**:
+
+- **Google Translate** (default): Google's free keyless endpoint, as described above.
+- **Custom (OpenAI-compatible)**: any Chat Completions API with the OpenAI shape. Put the address, key and model in `BetterChat.custom.json` in the log directory (`%LOCALAPPDATA%\CowboyBingus\Helldivers2\Logs\`):
+
+  ```json
+  {"base_url": "https://api.openai.com/v1", "api_key": "sk-...", "model": "gpt-4o-mini"}
+  ```
+
+  `base_url` may be any OpenAI-compatible provider (for example `https://api.deepseek.com/v1`, or a local server); the mod calls `base_url/chat/completions`. Apply the option again to reload the file. The key stays in that file and in the request to `base_url`; it is never logged and never sent to Google.
+
+  An optional `prompt` field replaces the mod's built-in system prompt; `{language}` becomes the target language's name. Unlike Google, the custom service does not detect the source language: the direction is decided by your prompt. Without one, the built-in prompt asks the model to translate into `{language}`. The message text goes to the configured `base_url` instead of Google (your key goes with it, in the request); nothing is sent to Google in that mode.
+
+### Outbound translation
+
+On its own, Translate Chat is one-way: it shows other players' messages in your language. **Outbound Translation** makes the translation two-way: with it on (and Translate Chat on), the message you type is read from the chat as you press Enter and the field is cleared before the game sends it, and only the translation is sent to the whole squad through the game's own chat send. If the translation fails, your original is sent instead, so no message is lost. **Outbound Language** picks the language (default English).
+
+- The other players never see your original text, only the translation.
+- A message already in the target language is sent as it is.
+- It is opt-in and off by default.
 
 ## Installation
 
