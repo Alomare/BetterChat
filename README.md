@@ -101,7 +101,7 @@ The verdict is the first line of `%LOCALAPPDATA%\CowboyBingus\Helldivers2\Logs\B
 - **Memory access.** Reads go through `ReadProcessMemory` on the game's own process, which fails instead of crashing on a bad address. The mod never writes game memory itself; the game's own functions play the sound, set the size, set the pasted text, add the translations and send your translated messages.
 - **Tests.** `tests/test_release.py` runs the built entry under LuaJIT against a game.dll dump (not included), with the chat ring, the HUD, the game's sound, scale, text, add-line and send functions, curl, both translation services, the clipboard and Mod Options Menu simulated.
 
-How it works in the game's code: [RESEARCH.md](RESEARCH.md). Release notes: [CHANGELOG.md](CHANGELOG.md).
+How it works in the game's code: [RESEARCH.md](RESEARCH.md). Contributing: [CONTRIBUTING.md](CONTRIBUTING.md). Release notes: [CHANGELOG.md](CHANGELOG.md).
 
 ## Credits
 
