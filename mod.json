@@ -3,9 +3,9 @@
     "guid": "b3ffcb44-9d18-4101-8b1b-8c3ff34e0ce9",
     "displayName": "Better Chat",
     "entry": "better_chat.lua",
-    "version": "5",
+    "version": "6",
     "icon": "icon.png",
-    "description": "In-game chat quality of life: live translations, sound alerts and size settings. Settings in Mod Options Menu (escape menu > MODS).",
+    "description": "In-game chat quality of life: live translations, sound alerts and size settings.",
     "requires": [
         "Bingus Shared Loader v17 or newer",
         "Mod Options Menu (optional: the settings)"

@@ -40,7 +40,7 @@ local real_ffi = require('ffi')
 local ffi = real_ffi
 local BASE = 0x40000000
 fake = {calls = {}, values = {}, specs = {}, changed = {}}
-CowboyBingusModLoader = {api = 1, open_log = function(name)
+CowboyBingusModLoader = {api = 1, log_directory = logdir .. '/Logs', open_log = function(name)
     if type(name) ~= 'string' or not name:match('^[%w_-]+%.log$') then return nil end
     return io.open(logdir .. '/' .. name, 'w')
 end}
@@ -166,6 +166,8 @@ k32.better_chat_GlobalUnlock = function(h) fake.unlocked = (fake.unlocked or 0) 
 user32 = {
     better_chat_GetAsyncKeyState = function(key)
         fake.key_reads = (fake.key_reads or 0) + 1
+        fake.key_counts = fake.key_counts or {}
+        fake.key_counts[key] = (fake.key_counts[key] or 0) + 1
         return fake.held[key] and -32768 or 0
     end,
     better_chat_GetForegroundWindow = function() return fake.foreground and ffi.cast('void *', fake.foreground) or nil end,
@@ -219,6 +221,15 @@ package.loaded.ffi = setmetatable({
                 assert(type(text) == 'string' and #text <= 0x200, 'add-line text over 0x200 bytes')
                 fake.calls[#fake.calls + 1] = string.format('line %x %x %s %s', rva, chat, tostring(sender), text)
                 if fake.on_add_line then fake.on_add_line(tostring(sender), text) end
+            end
+        end
+        if t == 'BetterChatSend' then
+            local rva = tonumber(v) - BASE
+            return function(chat, unused, text)
+                assert(type(text) == 'string' and #text < 0x200, 'send text of 0x200 bytes or more')
+                fake.calls[#fake.calls + 1] = string.format('send %x %x %s', rva, chat, text)
+                -- The game's send ends with the line in the local chat (its add-line), unless it refuses it.
+                if fake.on_send and not (fake.refuse and fake.refuse(text)) then fake.on_send(text) end
             end
         end
         return real_ffi.cast(t, v)
@@ -296,7 +307,7 @@ def run():
     check(not sigspec.check(signatures.SCRIPT, sigspec.build(signatures.SPECS)),
           "the script's signature blocks match research/signatures.py")
 
-    # --- Without Mod Options Menu: the defaults (sound: player joined notice).
+    # --- Without Mod Options Menu: the defaults (sound: player joined notice on the ship, action wheel in missions).
     logdir = Path(tempfile.mkdtemp())
     lua = new_lua(logdir)
     w = World(lua)
@@ -309,7 +320,7 @@ def run():
     log = lambda: (logdir / 'BetterChat.log').read_text(encoding='utf-8')
     status = lambda: (logdir / 'BetterChat_STATUS.log').read_text(encoding='utf-8')
     check(M.ready, 'ready: every signature at its rva, values read')
-    check('Ready: chat = context + 0xc418, ring at +0x9590 (stride 0x228, sender +0xb98); sound ready, scale ready, translate ready, show ready, paste ready; '
+    check('Ready: chat = context + 0xc418, ring at +0x9590 (stride 0x228, sender +0xb98); sound ready, scale ready, translate ready, show ready, paste ready, outbound ready; '
           'sounds: joined 0xda653421/0x82250982, left 0xc386a64a/0x03cf15e0, '
           'tab 0xadd37058/0xadd37058, subtab 0x468c8e58/0x468c8e58, option 0x144418d5/0x144418d5, '
           'confirm 0x7a69c309, back 0x96c8c848, wheel 0x22200946, purchase 0xa1af099e, dialog 0xd8fc9d33' in log(),
@@ -358,7 +369,7 @@ def run():
     w.push_all()
     w.add(OTHER)
     lua.execute('update(0.25)')
-    check(list(f.calls.values())[-1] == 'sound 1327f50 %x' % JOIN_MISSION, 'in missions: the mission join notice')
+    check(list(f.calls.values())[-1] == 'sound 1327f50 %x' % 0x22200946, 'in missions: the action wheel (default)')
     # A cleared history (count back to 0): new baseline, no sound.
     n = len(f.calls)
     w.first = w.count = 0
@@ -369,55 +380,62 @@ def run():
     # The default leaves the size alone.
     check('Chat scale' not in log(), 'default: chat size untouched')
 
-    # --- Mod Options Menu: two options, texts as functions, values applied.
+    # --- Mod Options Menu: the options in menu order, texts as functions, values applied.
     logdir2 = Path(tempfile.mkdtemp())
     lua2 = new_lua(logdir2)
     w2 = World(lua2)
     f2 = w2.f
-    lua2.execute('ModOptionsMenu = fake.menu; fake.values["alomare.better_chat.sound"] = 1')
+    lua2.execute('ModOptionsMenu = fake.menu; fake.values["alomare.better_chat.alert"] = false; '
+                 'fake.values["alomare.better_chat.inbound_language"] = 1')
     lua2.execute(SOURCE)
     lua2.execute('for i = 1, 5 do update(0.016) end')
     log2 = lambda: (logdir2 / 'BetterChat.log').read_text(encoding='utf-8')
     order = f2.order.split()
     s = f2.specs
-    sound = s['alomare.better_chat.sound']
-    check(order == ['alomare.better_chat.' + n for n in ('sound', 'sound_mission', 'sound_own', 'scale', 'translate', 'translate_to', 'translate_own')],
-          'options registered in order (no paste option): %r' % order)
-    names = [sound.choices[i]() for i in range(2, 12)]
-    check(sound.type == 'choice' and sound.choices[1] == 'OFF' and len(sound.choices) == 11
+    menu = ('scale', 'alert', 'alert_ship', 'alert_mission', 'service', 'inbound_language', 'outbound_language',
+            'translate_own')
+    check(order == ['alomare.better_chat.' + n for n in menu], 'options registered in menu order (no paste option): %r' % order)
+    gaps = [n for n in menu if s['alomare.better_chat.' + n].gap]
+    check(gaps == ['alert', 'service', 'translate_own'], 'a gap above Sound Alert, Translation Service and Inbound Debug: %r' % gaps)
+    alert = s['alomare.better_chat.alert']
+    check(alert.type == 'toggle' and alert.default is True and alert.label() == 'Sound Alert', 'Sound Alert: a toggle, on by default')
+    sound = s['alomare.better_chat.alert_ship']
+    names = [sound.choices[i]() for i in range(1, 11)]
+    check(sound.type == 'choice' and len(sound.choices) == 10
           and names == ['Player Joined', 'Player Left', 'Menu Tab', 'Menu Subtab', 'Option Click', 'Menu Confirm',
                         'Menu Back', 'Action Wheel', 'Item Purchase', 'Confirmation Dialog']
-          and sound.default == 2 and sound.label() == 'Sound Alert in Ship' and sound.mod() == 'Better Chat'
-          and sound.mod_id == 'alomare.better_chat', 'sound choice: OFF + the game sounds, texts as functions')
-    mission = s['alomare.better_chat.sound_mission']
-    check(mission.type == 'choice' and len(mission.choices) == 13 and mission.default == 2
-          and [mission.choices[i]() for i in range(2, 12)] == names
-          and [mission.choices[i]() for i in (12, 13)] == ['Reinforce Request', 'Countdown']
+          and sound.default == 1 and sound.label() == 'Sound Alert in Ship' and sound.mod() == 'Better Chat'
+          and sound.mod_id == 'alomare.better_chat', 'ship sound: the game sounds (no OFF), Player Joined by default, texts as functions')
+    mission = s['alomare.better_chat.alert_mission']
+    check(mission.type == 'choice' and len(mission.choices) == 12 and mission.default == 8
+          and [mission.choices[i]() for i in range(1, 11)] == names
+          and [mission.choices[i]() for i in (11, 12)] == ['Reinforce Request', 'Countdown']
           and mission.label() == 'Sound Alert in Mission',
-          'mission sound choice: the same sounds, then the two only the mission bank has')
-    own = s['alomare.better_chat.sound_own']
-    check(own.type == 'toggle' and own.default is False and own.label() == 'Sound Alert on My Messages',
-          'own messages toggle: off by default')
+          'mission sound: the same sounds, then the two only the mission bank has; Action Wheel by default')
+    debug = s['alomare.better_chat.translate_own']
+    check(debug.type == 'toggle' and debug.default is False and debug.label() == 'Inbound Debug', 'Inbound Debug: off by default')
     sc = s['alomare.better_chat.scale']
     check(sc.type == 'slider' and sc.min == 50 and sc.max == 200 and sc.step == 5 and sc.default == 100
-          and not sc.gap          and sc.label() == 'Chat Size (%)', 'size slider: 50-200% in steps of 5, 100 by default')
+          and not sc.gap and sc.label() == 'Chat Size (%)', 'size slider: 50-200% in steps of 5, 100 by default')
     w2.add(OTHER)
     lua2.execute('update(0.25)')
-    check(len(f2.calls) == 0 and '1 new chat line(s), 1 from other players' in log2(), 'sound OFF: no sound')
-    for choice, want, what in ((4, TAB, 'menu tab'), (5, SUBTAB, 'menu subtab'), (7, 0x7a69c309, 'menu confirm'),
-                               (8, 0x96c8c848, 'menu back'), (9, 0x22200946, 'action wheel'),
-                               (10, 0xa1af099e, 'item purchase'), (11, 0xd8fc9d33, 'confirmation dialog'),
-                               (6, OPTION, 'option click')):
+    check(len(f2.calls) == 0 and '1 new chat line(s), 1 from other players' in log2(), 'Sound Alert off: no sound')
+    lua2.execute('fake.changed["alomare.better_chat.alert"](true)')
+    check(len(f2.calls) == 0, 'turning Sound Alert on plays nothing')
+    for choice, want, what in ((3, TAB, 'menu tab'), (4, SUBTAB, 'menu subtab'), (6, 0x7a69c309, 'menu confirm'),
+                               (7, 0x96c8c848, 'menu back'), (8, 0x22200946, 'action wheel'),
+                               (9, 0xa1af099e, 'item purchase'), (10, 0xd8fc9d33, 'confirmation dialog'),
+                               (5, OPTION, 'option click')):
         f2.calls = lua2.table()
-        lua2.execute('fake.changed["alomare.better_chat.sound"](%d)' % choice)
+        lua2.execute('fake.changed["alomare.better_chat.alert_ship"](%d)' % choice)
         check(list(f2.calls.values()) == ['sound 1327f50 %x' % want], 'picking %s plays it once (preview)' % what)
-    for choice, want, what in ((12, 0x4a300afb, 'reinforce request'), (13, 0x9da28dab, 'countdown')):
+    for choice, want, what in ((11, 0x4a300afb, 'reinforce request'), (12, 0x9da28dab, 'countdown')):
         f2.calls = lua2.table()
-        lua2.execute('fake.changed["alomare.better_chat.sound_mission"](%d)' % choice)
+        lua2.execute('fake.changed["alomare.better_chat.alert_mission"](%d)' % choice)
         check(list(f2.calls.values()) == ['sound 1327f50 %x' % want], 'picking %s for missions plays it once (preview)' % what)
-    lua2.execute('fake.changed["alomare.better_chat.sound"](12)')
-    check('Option sound = 2' in log2(), 'the ship option has no mission-only sound: index 12 falls back to the default')
-    lua2.execute('fake.changed["alomare.better_chat.sound"](6)')
+    lua2.execute('fake.changed["alomare.better_chat.alert_ship"](11)')
+    check('Option alert_ship = 1' in log2(), 'the ship option has no mission-only sound: index 11 falls back to the default')
+    lua2.execute('fake.changed["alomare.better_chat.alert_ship"](5)')
     lua2.execute('update(3.0)')
     f2.calls = lua2.table()
     w2.add(OTHER)
@@ -427,11 +445,11 @@ def run():
     lua2.execute('update(3.0)')
     w2.add(OTHER)
     lua2.execute('fake.sound_cost = 12; update(0.25); fake.sound_cost = 0')
-    check('Slow update: 12.0 ms (chat 12.0, paste 0.0, translate 0.0, show 0.0, scale 0.0, other 0.0; '
+    check('Slow update: 12.0 ms (chat 12.0, paste 0.0, outbound 0.0, translate 0.0, show 0.0, scale 0.0, other 0.0; '
           'inside them: sound 12.0, curl start 0.0, log 0.0 in 3 lines)' in log2(),
           'a slow sound call is logged as a slow update with what took the time')
     # In a mission the mission's choice plays, not the ship's.
-    lua2.execute('fake.changed["alomare.better_chat.sound_mission"](7); update(3.0)')
+    lua2.execute('fake.changed["alomare.better_chat.alert_mission"](6); update(3.0)')
     w2.mode(4)
     w2.push_all()
     f2.calls = lua2.table()
@@ -445,32 +463,17 @@ def run():
     w2.add(OTHER)
     lua2.execute('update(0.25)')
     check(list(f2.calls.values()) == ['sound 1327f50 %x' % OPTION], "back on the ship: the ship option's sound")
-    # Your own lines: quiet unless Sound Alert on My Messages is on.
+    # Your own lines: quiet.
     lua2.execute('update(3.0)')
     f2.calls = lua2.table()
     w2.add(OWN)
     lua2.execute('update(0.25)')
-    check(len(f2.calls) == 0 and '1 new chat line(s), 0 from other players, 1 from you' in log2(),
-          'your own line, own messages off: no sound')
-    lua2.execute('fake.changed["alomare.better_chat.sound_own"](true)')
-    check(len(f2.calls) == 0, 'turning own messages on plays nothing')
-    w2.add(OWN)
+    check(len(f2.calls) == 0 and '1 new chat line(s), 0 from other players, 1 from you' in log2(), 'your own line: no sound')
+    # Sound Alert off again: quiet, whatever the sounds picked.
+    lua2.execute('fake.changed["alomare.better_chat.alert"](false); update(3.0)')
+    w2.add(OTHER)
     lua2.execute('update(0.25)')
-    check(list(f2.calls.values()) == ['sound 1327f50 %x' % OPTION], 'your own line, own messages on: the sound')
-    lua2.execute('update(3.0)')
-    w2.mode(4)
-    w2.push_all()
-    f2.calls = lua2.table()
-    w2.add(OWN)
-    lua2.execute('update(0.25)')
-    check(list(f2.calls.values()) == ['sound 1327f50 %x' % 0x7a69c309], "your own line in a mission: the mission option's sound")
-    w2.mode(3)
-    w2.push_all()
-    lua2.execute('fake.changed["alomare.better_chat.sound_own"](false); update(3.0)')
-    f2.calls = lua2.table()
-    w2.add(OWN)
-    lua2.execute('update(0.25)')
-    check(len(f2.calls) == 0, 'own messages off again: no sound')
+    check(len(f2.calls) == 0, 'Sound Alert turned off: no sound')
     # Size: scaled from the widget's own scale once it is laid out.
     f2.calls = lua2.table()
     lua2.execute('fake.changed["alomare.better_chat.scale"](150); update(0.016)')
@@ -493,8 +496,8 @@ def run():
     lua3.execute('fake.menu.version = 1; ModOptionsMenu = fake.menu')
     lua3.execute(SOURCE)
     lua3.execute('update(0.016)')
-    s3 = lua3.globals().fake.specs['alomare.better_chat.sound']
-    check(s3.label == 'Sound Alert in Ship' and s3.choices[4] == 'Menu Tab', 'v1.0: texts as strings')
+    s3 = lua3.globals().fake.specs['alomare.better_chat.alert_ship']
+    check(s3.label == 'Sound Alert in Ship' and s3.choices[3] == 'Menu Tab', 'v1.0: texts as strings')
 
     # --- set_scale moved out of reach: only the size is off.
     logdir4 = Path(tempfile.mkdtemp())
@@ -513,7 +516,7 @@ def run():
     lua6 = new_lua(logdir6)
     w6 = World(lua6)
     w6.f.patch(0x17ae42c, b'\xcc' * 4)
-    lua6.execute('ModOptionsMenu = fake.menu; fake.values["alomare.better_chat.sound"] = 4')
+    lua6.execute('ModOptionsMenu = fake.menu; fake.values["alomare.better_chat.alert_ship"] = 3')
     lua6.execute(SOURCE)
     lua6.execute('for i = 1, 80 do update(0.016) end')
     log6 = (logdir6 / 'BetterChat.log').read_text(encoding='utf-8')
@@ -536,6 +539,8 @@ def run():
     run_translation(check)
     run_paste(check)
     run_translate_to(check)
+    run_outbound(check)
+    run_service(check)
 
     print('%d/%d' % (sum(ok), len(ok)))
     return all(ok)
@@ -662,18 +667,20 @@ def run_translate_to(check):
     w = World(lua)
     f = w.f
     f.region, f.display = 'pt-BR', 'en-US'
-    lua.execute('ModOptionsMenu = fake.menu; fake.values["alomare.better_chat.translate"] = true')
+    lua.execute('ModOptionsMenu = fake.menu')
     lua.execute(SOURCE)
     lua.execute('for i = 1, 5 do update(0.016) end')
     log = lambda: (logdir / 'BetterChat.log').read_text(encoding='utf-8')
-    spec = f.specs['alomare.better_chat.translate_to']
+    spec = f.specs['alomare.better_chat.inbound_language']
     names = [spec.choices[i]() if callable(spec.choices[i]) else spec.choices[i] for i in range(1, len(spec.choices) + 1)]
-    check(spec.type == 'choice' and spec.default == 1 and len(names) == 15 and names[:3] == ['Automatic', 'Game Language', 'English']
-          and names[8] == 'Português (Brasil)' and spec.label() == 'Translate To',
-          'Translate To: Automatic (default), game language, 13 languages: %r' % names)
+    check(spec.type == 'choice' and spec.default == 2 and len(names) == 16
+          and names[:4] == ['OFF', 'Automatic', 'Game Language', 'English']
+          and names[9] == 'Português (Brasil)' and spec.label() == 'Inbound Language'
+          and 'Translation Service' in spec.description(),
+          'Inbound Language: OFF, Automatic (default), game language, 13 languages: %r' % names)
     check('Windows: regional format pt-BR, display language en-US (Automatic: pt)' in log(),
           "Windows' regional format and display language read")
-    finish_warmup(lua, f, log, check, 'saved on: at load')
+    finish_warmup(lua, f, log, check, 'on by default: at load')
 
     def target(line):
         w.add(OTHER, line)
@@ -687,10 +694,10 @@ def run_translate_to(check):
     f.region = None
     lua.execute('BetterChat._test.reread_windows()')
     check(target(b'hello you') == 'en', 'Automatic without a regional format: the display language')
-    lua.execute('fake.changed["alomare.better_chat.translate_to"](2)')
+    lua.execute('fake.changed["alomare.better_chat.inbound_language"](3)')
     game = re.search(r'Text language: (\S+)', log()).group(1)
     check(target(b'hello again') == {'pt-BR': 'pt', 'zh-Hans': 'zh-CN'}.get(game, game), 'Game Language: the Text Language')
-    lua.execute('fake.changed["alomare.better_chat.translate_to"](10)')
+    lua.execute('fake.changed["alomare.better_chat.inbound_language"](11)')
     check(target(b'hello once more') == 'pt-PT', 'an explicit language: Português (Portugal) is pt-PT')
     # Already in the target's language: Brazilian Portuguese is not translated to European Portuguese.
     w.add(OTHER, b'bom dia pessoal')
@@ -769,36 +776,36 @@ def google(text, source):
 
 
 def run_translation(check):
-    # --- Translation: off by default; nothing is started (nothing leaves the game) while it is off.
+    # --- Translation: nothing is started (nothing leaves the game) while Inbound Language is OFF.
     logdir = Path(tempfile.mkdtemp())
     lua = new_lua(logdir)
     w = World(lua)
     f = w.f
-    lua.execute('ModOptionsMenu = fake.menu; fake.values["alomare.better_chat.sound"] = 1')
+    lua.execute('ModOptionsMenu = fake.menu; fake.values["alomare.better_chat.alert"] = false; '
+                'fake.values["alomare.better_chat.inbound_language"] = 1')
     lua.execute(SOURCE)
     lua.execute('for i = 1, 5 do update(0.016) end')
     log = lambda: (logdir / 'BetterChat.log').read_text(encoding='utf-8')
     M = lua.globals().BetterChat
-    spec = f.specs['alomare.better_chat.translate']
-    check(spec.type == 'toggle' and spec.default is False and spec.label() == 'Translate Chat'
-          and 'translate.googleapis.com' in spec.description()
+    spec = f.specs['alomare.better_chat.inbound_language']
+    check(spec.default == 2 and f.specs['alomare.better_chat.outbound_language'].default == 1
           and f.specs['alomare.better_chat.translate_own'].default is False,
-          'translation toggles: off by default, the description names the service')
+          'Inbound Language Automatic, Outbound Language OFF and Inbound Debug off by default')
     check(f.curl_checked == 'C:\\Windows\\system32\\curl.exe' and 'Translation: curl at C:\\Windows\\system32\\curl.exe' in log(),
           "curl.exe is looked for in Windows' system folder only")
     w.add(OTHER, b'hola amigos')
     lua.execute('update(0.25); update(0.016)')
-    check(len(f.processes) == 0, 'translation off (default): no process, nothing sent')
+    check(len(f.processes) == 0, 'Inbound Language OFF: no process, nothing sent')
 
     # On, shown in the chat: one curl per line, the line on its standard input only.
     w.f.on_add_line = lambda sender, text: w.add(int(sender[:-3]), text.encode('utf-8'))
-    lua.execute('fake.changed["alomare.better_chat.translate"](true)')
+    lua.execute('fake.changed["alomare.better_chat.inbound_language"](3)')  # Game Language
     import re
     target = re.search(r'Text language: (\S+)', log()).group(1)
     tl = {'pt-BR': 'pt', 'zh-Hans': 'zh-CN'}.get(target, target)
     w.add(OTHER, 'hola amigos, ¿qué tal? "extracción" & ya'.encode('utf-8'))
     lua.execute('fake.spawn_cost = 266; update(0.25); fake.spawn_cost = 0')
-    check('Slow update: 266.0 ms (chat 0.0, paste 0.0, translate 266.0, show 0.0, scale 0.0, other 0.0; '
+    check('Slow update: 266.0 ms (chat 0.0, paste 0.0, outbound 0.0, translate 266.0, show 0.0, scale 0.0, other 0.0; '
           'inside them: sound 0.0, curl start 266.0, log ' in log(),
           'a slow curl start is logged as a slow update, in its part')
     finish_warmup(lua, f, log, check, 'in the menu', 266)
@@ -812,7 +819,7 @@ def run_translation(check):
                      ('max-filesize', '131072', ''), ('get', None, ''),
                      ('data-urlencode', 'q=hola amigos, ¿qué tal? "extracción" & ya', ''),
                      ('write-out', '\n@@ %{http_code}', ''),
-                     ('url', 'https://translate.googleapis.com/translate_a/single?client=gtx&dt=t&sl=auto&tl=' + tl, '')],
+                     ('url', 'https://translate.googleapis.com/translate_a/t?client=dict-chrome-ex&sl=auto&tl=' + tl, '')],
           'the request in the config on standard input: the line, the target language from the Text Language: %r'
           % config)
     check(p.flags == 0x08000000 + 0x80000 and f.handle_list and not p.private,
@@ -871,10 +878,10 @@ def run_translation(check):
 
     # Errors: an HTTP error and a curl that hangs are logged; nothing is shown.
     shown = len([c for c in f.calls.values() if c.startswith('line ')])
-    f.reply(6, 'Too Many Requests', '429')
+    f.reply(6, 'Not Found', '404')
     lua.execute('update(0.016)')
-    check('Translation 6 (0 ms, start 0.0 ms) failed: done, curl exit 0, HTTP 429\n'
-          in log() and 'Translation 6 will be retried' not in log(), 'an HTTP error is logged; a 429 is not retried')
+    check('Translation 6 (0 ms, start 0.0 ms) failed: done, curl exit 0, HTTP 404\n'
+          in log() and 'Translation 6 will be retried' not in log(), 'an HTTP error is logged; a 404 is not retried')
     w.add(OTHER, b'tres')
     lua.execute('update(0.25)')
     lua.eval('function(s) fake.qpc = fake.qpc + 13000 end')(0)
@@ -899,7 +906,7 @@ def run_translation(check):
     f.reply(9, google('farewellfriends', 'es'))
     lua.execute('update(0.016)')
     check('Translation 9 shown' in log() and not any(t in log() for t in ('adiosamigos', 'farewellfriends', 'hola',
-          'segundo', 'Too Many Requests', 'extraction')), 'the log holds no message, translation or reply')
+          'segundo', 'Not Found', 'extraction')), 'the log holds no message, translation or reply')
 
     # A server error: tried once more a second later, then given up.
     w.add(OTHER, b'cinco')
@@ -929,10 +936,10 @@ def run_translation(check):
     # Off again: queued lines are dropped, new lines start nothing.
     w.add(OTHER, b'uno', push=False)
     w.add(OTHER, b'dos')
-    lua.execute('fake.changed["alomare.better_chat.translate"](false); update(0.25); update(0.016); update(0.016)')
+    lua.execute('fake.changed["alomare.better_chat.inbound_language"](1); update(0.25); update(0.016); update(0.016)')
     check(len(f.processes) == 12, 'translation turned off: nothing more is started')
     check(f.closed == 6 * 12, 'every handle of every curl closed: %d' % f.closed)
-    lua.execute('fake.changed["alomare.better_chat.translate"](true); update(0.016)')
+    lua.execute('fake.changed["alomare.better_chat.inbound_language"](3); update(0.016)')
     w.add(OTHER, b'otra vez')
     lua.execute('update(0.25)')
     check(len(f.processes) == 13 and curl_options(f.processes[13])['data-urlencode'] == 'q=otra vez'
@@ -956,6 +963,46 @@ def run_translation(check):
         f.reply(q, google('x', 'es'))
         lua.execute('update(0.016)')
 
+    # Google refuses the endpoint (429, "automated queries"): the line goes again at once to the other endpoint, which
+    # stays for the next lines; a line refused by both is given up.
+    w.add(OTHER, b'por favor')
+    lua.execute('update(0.25)')
+    q = len(f.processes)
+    check(curl_options(f.processes[q])['url'].startswith('https://translate.googleapis.com/translate_a/t?client=dict-chrome-ex&'),
+          'the Chrome extension client first')
+    f.reply(q, 'Sorry...', '429')
+    lua.execute('update(0.016); update(0.016)')
+    check(len(f.processes) == q + 1 and 'Google endpoint dict-chrome-ex refused (HTTP 429): now gtx' in log()
+          and curl_options(f.processes[q + 1])['url'] == 'https://translate.googleapis.com/translate_a/single?client=gtx&dt=t&sl=auto&tl=' + tl
+          and curl_options(f.processes[q + 1])['data-urlencode'] == 'q=por favor',
+          'a 429: the same line at once to the web client (gtx)')
+    f.reply(q + 1, google('please', 'es'))
+    lua.execute('update(0.016)')
+    check('Translation %d shown' % (q + 1) in log() or [c for c in f.calls.values() if c.startswith('line ')][-1].endswith('[ES] please'),
+          'its translation is shown')
+    w.add(OTHER, b'muchas gracias')
+    lua.execute('update(0.25)')
+    check(curl_options(f.processes[q + 2])['url'].startswith('https://translate.googleapis.com/translate_a/single?client=gtx&'),
+          'the next line goes to the endpoint that answered')
+    f.reply(q + 2, 'Forbidden', '403')
+    lua.execute('update(0.016); update(0.016)')
+    check(len(f.processes) == q + 3 and 'Google endpoint gtx refused (HTTP 403): now dict-chrome-ex' in log(),
+          'a 403 switches back')
+    f.reply(q + 3, 'Sorry...', '429')
+    lua.execute('update(0.016); update(0.016); update(0.016)')
+    check(len(f.processes) == q + 3 and 'will be retried' not in log().split('HTTP 403')[-1],
+          'refused by both: the line is given up')
+    # The Chrome extension client's reply: [["text", "es"]].
+    w.add(OTHER, b'buenas noches')
+    lua.execute('update(0.25)')
+    import json
+    f.reply(q + 4, json.dumps([['good night', 'es']]))
+    lua.execute('update(0.016)')
+    check([c for c in f.calls.values() if c.startswith('line ')][-1].endswith('ULL [ES] good night'),
+          "the Chrome extension client's reply shape is read")
+    pr = M._test.parse_reply
+    check(pr('["Danke"]') is None and pr('[["Danke"]]') == 'Danke', 'a reply without a detected language: the text alone')
+
     # The JSON reader: escapes, surrogate pairs, nulls, objects.
     js = M._test.json
     v = js('["a\\u00e9\\ud83d\\ude00\\"\\\\", null, -1.5e2, {"k": [true, false]}]')
@@ -968,7 +1015,7 @@ def run_translation(check):
     logdir2 = Path(tempfile.mkdtemp())
     lua2 = new_lua(logdir2)
     w2 = World(lua2)
-    lua2.execute('fake.no_curl = true; ModOptionsMenu = fake.menu; fake.values["alomare.better_chat.translate"] = true')
+    lua2.execute('fake.no_curl = true; ModOptionsMenu = fake.menu')
     lua2.execute(SOURCE)
     lua2.execute('for i = 1, 5 do update(0.016) end')
     w2.add(OTHER, b'hola')
@@ -987,6 +1034,396 @@ def run_translation(check):
     st3 = (logdir3 / 'BetterChat_STATUS.log').read_text(encoding='utf-8')
     check('show off (code not found: add_line (not found))' in st3 and 'translate ready' in st3,
           'add-line not found: only showing is off')
+
+
+FIELD = 0x14498 + 0x1398                  # the chat's text field in the HUD
+FIELD_WIDGET = HUD + FIELD + 0x220        # its text widget
+FIELD_TEXT = FIELD + 0x220 + 0x11c        # the field's text (in the HUD block)
+INPUT_OPEN = 0x14498 + 0x139b8            # the chat's input-open byte (in the HUD block)
+
+
+class Chat:
+    """The chat's text input as the player uses it: open it, type into the field, press Enter."""
+
+    def __init__(self, lua, w, limit=120):
+        self.lua, self.w, self.f = lua, w, w.f
+        struct.pack_into('<I', w.hud, FIELD + 0xa84, limit)  # the chat keeps (limit - 1) characters
+        self.f.heap(HUD, bytes(w.hud))
+
+    def open(self, is_open=True):
+        self.w.hud[INPUT_OPEN] = 1 if is_open else 0
+        self.f.heap(HUD, bytes(self.w.hud))
+        self.lua.execute('update(0.1)')  # the open flag is read every 100 ms
+
+    def field(self, text):
+        """Sets the field's text without a frame (as typing does between two frames)."""
+        self.w.hud[FIELD_TEXT:FIELD_TEXT + 0x325] = text.ljust(0x325, b'\0')
+        self.f.heap(HUD, bytes(self.w.hud))
+
+    def type(self, text):
+        self.field(text)
+        self.lua.execute('update(0.016)')
+
+    def enter(self):
+        self.f.held[0x0D] = True
+        self.lua.execute('update(0.016)')
+        self.f.held[0x0D] = None
+        self.lua.execute('update(0.016)')
+
+    def say(self, text):
+        """Types a message and presses Enter."""
+        self.type(text)
+        self.enter()
+
+
+def calls(f, prefix):
+    return [c for c in f.calls.values() if c.startswith(prefix)]
+
+
+def run_outbound(check):
+    logdir = Path(tempfile.mkdtemp())
+    lua = new_lua(logdir)
+    w = World(lua)
+    f = w.f
+    chat = Chat(lua, w)
+    f.on_send = lambda text: w.add(OWN, text.encode('utf-8'))
+    lua.execute('ModOptionsMenu = fake.menu; fake.values["alomare.better_chat.alert"] = false; '
+                'fake.values["alomare.better_chat.inbound_language"] = 1')
+    lua.execute(SOURCE)
+    lua.execute('for i = 1, 5 do update(0.016) end')
+    log = lambda: (logdir / 'BetterChat.log').read_text(encoding='utf-8')
+    status = (logdir / 'BetterChat_STATUS.log').read_text(encoding='utf-8')
+    send_to = 'send 1097560 %x ' % (CTX + CHAT)
+    sends = lambda: [c[len(send_to):] for c in calls(f, 'send ')]
+    clears = lambda: [c for c in calls(f, 'text ') if c == 'text %x ' % FIELD_WIDGET]
+
+    def choices(spec):
+        return [c() if callable(c) else c for c in (spec.choices[i] for i in range(1, len(spec.choices) + 1))]
+
+    to, sv = (f.specs['alomare.better_chat.' + n] for n in ('outbound_language', 'service'))
+    names = choices(to)
+    check(to.type == 'choice' and to.label() == 'Outbound Language' and to.default == 1 and names[:2] == ['OFF', 'English']
+          and len(names) == 14 and 'Automatic' not in names and 'Translation Service' in to.description()
+          and choices(sv) == ['Google Translate', 'Custom']
+          and sv.default == 1 and sv.label() == 'Translation Service',
+          'Outbound Language (OFF by default, then English first, 13 languages), Translation Service (Google)')
+    check('outbound ready' in status, 'outbound ready: the chat send found by its body and its call agree: %r'
+          % status.splitlines()[0])
+
+    # Off (default): Enter is not even read; the game sends the message itself.
+    chat.open()
+    f.key_counts = None
+    chat.say(b'hola amigos, cuidado')
+    check(not clears() and len(f.processes) == 0 and not (f.key_counts and f.key_counts[0x0D]),
+          'Outbound Language OFF: Enter not read, the field left alone, nothing sent anywhere')
+
+    # On: a curl warm-up first (as for inbound), then Enter takes the text and empties the field.
+    lua.execute('fake.changed["alomare.better_chat.outbound_language"](2); update(0.016)')  # English
+    finish_warmup(lua, f, log, check, 'Outbound Language English')
+    chat.open(False)
+    f.key_counts = None
+    lua.execute('for i = 1, 30 do update(0.016) end')
+    check(not (f.key_counts and f.key_counts[0x0D]), 'chat closed: Enter is not read')
+    chat.open()
+    chat.say(b'hola amigos, cuidado')
+    p = f.processes[1] if len(f.processes) == 1 else None
+    opts = p and curl_options(p)
+    check(len(clears()) == 1 and opts and opts['data-urlencode'] == 'q=hola amigos, cuidado'
+          and opts['url'].endswith('&tl=en'),
+          'Enter: the field emptied through the game\'s setter, the text sent for translation into English: %r' % opts)
+    check('Outbound 1: 20 bytes taken from the field (taken 1, game first 0)' in log(), 'the take is logged by size')
+    check(not sends(), 'nothing sent before the translation arrives')
+    n_lines = log().count('new chat line(s)')
+    f.reply(1, google('hi friends, careful', 'es'))
+    lua.execute('update(0.016)')
+    check(sends() == ['hi friends, careful'], 'the translation sent through the chat\'s own send: %r' % sends())
+    check(log().index('Outbound: first call of the chat send') < log().index('Outbound 1 sent translated (19 bytes)'),
+          'a breadcrumb before the first call of the chat send, then the send logged by size')
+    lua.execute('for i = 1, 3 do update(0.25) end')
+    check(log().count('new chat line(s)') == n_lines, 'the sent line is not a new message (no sound, not translated)')
+
+    # Already in the Outbound Language, a failure, a timeout: the message goes as written.
+    chat.say(b'hello everyone here')
+    f.reply(2, google('hello everyone here', 'en'))
+    lua.execute('update(0.016)')
+    check(sends()[-1] == 'hello everyone here' and 'Outbound 2 sent as written (19 bytes, already in en)' in log(),
+          'already in English: sent as written')
+    chat.say(b'otra cosa mas')
+    f.reply(3, 'Not Found', '404')
+    lua.execute('update(0.016); update(0.016)')
+    check(sends()[-1] == 'otra cosa mas' and 'Outbound 3 will be retried' not in log() and len(f.processes) == 3,
+          'translation failed: sent as written at once, no retry')
+    chat.say(b'una vez mas')
+    lua.eval('function() fake.qpc = fake.qpc + 13000 end')()
+    lua.execute('update(0.016)')
+    check(f.processes[4].terminated and sends()[-1] == 'una vez mas', 'no answer in 12 s: sent as written')
+
+    # The game ran first: Enter finds the field emptied (the game sent it): logged, nothing taken, nothing sent.
+    n_sends, n_proc = len(sends()), len(f.processes)
+    chat.type(b'mensaje directo')
+    chat.field(b'')
+    w.add(OWN, b'mensaje directo')
+    chat.enter()
+    check('Outbound: Enter found the field already empty (15 bytes the frame before): the game ran first '
+          '(game first 1 times, taken 4)' in log() and len(f.processes) == n_proc and len(sends()) == n_sends,
+          'the game ran first: logged with the counts, nothing sent twice')
+    lua.execute('update(0.25)')
+    # Taken, but the game had sent it anyway (the ring shows it): the translation is not sent.
+    chat.say(b'carrera rapida')
+    w.add(OWN, b'carrera rapida')
+    lua.execute('update(0.25)')
+    f.reply(len(f.processes), google('quick race', 'es'))
+    lua.execute('update(0.016)')
+    check('the game sent the message itself (game first 2 times)' in log() and len(sends()) == n_sends
+          and 'not sent: the game sent the message itself' in log(), 'taken but sent by the game too: no duplicate')
+
+    # Short lines stay with the game; long translations keep the chat's own character limit (119 here).
+    chat.say(b'gg')
+    check(len(clears()) == 5 and 'Outbound: left to the game (too short)' in log(), 'a short ASCII line is left to the game')
+    chat.say(b'largo mensaje')
+    f.reply(len(f.processes), google('x' * 300, 'es'))
+    lua.execute('update(0.016)')
+    check(sends()[-1] == 'x' * 119, "a long translation is cut to the chat's character limit: %d" % len(sends()[-1]))
+    chat.say('你好啊'.encode('utf-8'))
+    f.reply(len(f.processes), google('漢' * 300, 'zh-CN'))
+    lua.execute('update(0.016)')
+    check(sends()[-1] == '漢' * 119, 'characters, not bytes, and within the send\'s 0x200 bytes')
+
+    # A translation the game refuses (nothing reaches the chat) goes as written.
+    f.refuse = lambda text: text.startswith('REFUSED')
+    chat.say(b'mensaje rechazado')
+    f.reply(len(f.processes), google('REFUSED text', 'es'))
+    lua.execute('update(0.016)')
+    check(sends()[-2:] == ['REFUSED text', 'mensaje rechazado'] and 'sent as written instead' in log(),
+          'a translation the game does not take: the message is sent as written')
+    f.refuse = None
+
+    # With Translate Inbound on (and your own lines too): outbound goes ahead of waiting lines, and the line it sends
+    # is not translated back.
+    lua.execute('fake.changed["alomare.better_chat.inbound_language"](3); fake.changed["alomare.better_chat.translate_own"](true)')
+    w.add(OTHER, b'hola todos')
+    lua.execute('update(0.25)')
+    running = len(f.processes)
+    w.add(OTHER, b'segunda linea')
+    lua.execute('update(0.25)')
+    chat.say(b'voy para alla')
+    f.reply(running, google('hello all', 'es'))
+    lua.execute('update(0.016); update(0.016)')
+    nxt = f.processes[running + 1]
+    check(curl_options(nxt)['data-urlencode'] == 'q=voy para alla', 'an outbound message goes ahead of waiting lines')
+    f.reply(running + 1, google('on my way', 'es'))
+    lua.execute('update(0.016); update(0.016)')
+    check(sends()[-1] == 'on my way' and curl_options(f.processes[running + 2])['data-urlencode'] == 'q=segunda linea',
+          'then the waiting line')
+    f.reply(running + 2, google('second line', 'es'))
+    lua.execute('for i = 1, 3 do update(0.25) end')
+    check(len(f.processes) == running + 2, 'the sent translation is not translated again (Inbound Debug)')
+
+    # Google refuses the endpoint: an outbound message goes again at once to the other one (the player waits).
+    chat.say(b'vamos de nuevo')
+    q = len(f.processes)
+    f.reply(q, 'Sorry...', '429')
+    lua.execute('update(0.016); update(0.016)')
+    check(len(f.processes) == q + 1 and curl_options(f.processes[q + 1])['data-urlencode'] == 'q=vamos de nuevo'
+          and 'gtx' in curl_options(f.processes[q + 1])['url'] and sends()[-1] != 'vamos de nuevo',
+          'an outbound message refused with 429: sent again to the other endpoint, not as written')
+    f.reply(q + 1, google('here we go again', 'es'))
+    lua.execute('update(0.016); update(0.016)')
+    check(sends()[-1] == 'here we go again', 'then its translation is sent')
+
+    # Turned off while a message waits: it goes as written at once.
+    w.add(OTHER, b'otra linea larga')
+    lua.execute('update(0.25)')
+    chat.say(b'espera un momento')
+    lua.execute('fake.changed["alomare.better_chat.outbound_language"](1); update(0.016)')
+    check(sends()[-1] == 'espera un momento' and 'Outbound Language turned OFF' in log(),
+          'Outbound Language turned OFF: the waiting message is sent as written')
+    f.reply(len(f.processes), google('another long line', 'es'))
+    lua.execute('update(0.016)')
+
+    texts = ('hola amigos', 'hi friends', 'otra cosa', 'mensaje directo', 'carrera', 'largo mensaje', 'REFUSED',
+             'rechazado', 'voy para', 'on my way', 'espera un', 'vamos de', 'here we go')
+    check(not any(t in log() for t in texts), 'the log holds no message or translation')
+
+    # The chat send's code changed: only outbound is off.
+    logdir2 = Path(tempfile.mkdtemp())
+    lua2 = new_lua(logdir2)
+    World(lua2)
+    lua2.globals().fake.patch(0x1097560, b'\xcc' * 4)
+    lua2.execute(SOURCE)
+    lua2.execute('for i = 1, 80 do update(0.016) end')
+    st2 = (logdir2 / 'BetterChat_STATUS.log').read_text(encoding='utf-8')
+    check('outbound off (code not found: send_line (not found))' in st2 and 'translate ready' in st2
+          and 'paste ready' in st2, 'chat send not found: only outbound is off')
+
+
+def chat_completion(content):
+    """An OpenAI-compatible chat completions reply."""
+    import json
+    return json.dumps({'id': 'chatcmpl-1', 'object': 'chat.completion',
+                       'choices': [{'index': 0, 'message': {'role': 'assistant', 'content': content},
+                                    'finish_reason': 'stop'}]})
+
+
+def run_service(check):
+    import json
+    logdir = Path(tempfile.mkdtemp())
+    lua = new_lua(logdir)
+    w = World(lua)
+    f = w.f
+    chat = Chat(lua, w)
+    f.on_send = lambda text: w.add(OWN, text.encode('utf-8'))
+    lua.execute('ModOptionsMenu = fake.menu; fake.values["alomare.better_chat.alert"] = false; '
+                'fake.values["alomare.better_chat.service"] = 2; fake.values["alomare.better_chat.inbound_language"] = 4')
+    lua.execute(SOURCE)
+    lua.execute('for i = 1, 5 do update(0.016) end')
+    log = lambda: (logdir / 'BetterChat.log').read_text(encoding='utf-8')
+    path = logdir / 'BetterChat_service.json'
+    template = json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
+    check(template.get('base_url') == 'https://api.openai.com/v1' and template.get('api_key') == ''
+          and template.get('model') == '' and 'Custom service off: BetterChat_service.json was missing' in log()
+          and str(logdir) not in log() and 'Logs' not in path.parent.name,
+          'Custom without a file: a template is written next to the Logs folder (not in it); the path is not logged')
+    examples = template.get('examples', {})
+    url_why = lua.globals().BetterChat._test.url_why
+    check(examples.get('DeepSeek', {}).get('base_url') == 'https://api.deepseek.com/v1'
+          and examples['Qwen, Alibaba Cloud (mainland China)']['base_url'] == 'https://dashscope.aliyuncs.com/compatible-mode/v1'
+          and all(url_why(e['base_url']) is False and e['model'] for k, e in examples.items() if k != 'about'),
+          'the template lists example services (DeepSeek, Qwen, GLM, OpenAI, local), each a usable address and model')
+    finish_warmup(lua, f, log, check, 'saved on, custom service')
+    w.add(OTHER, b'hola amigos')
+    lua.execute('update(0.25); update(0.016)')
+    check(len(f.processes) == 0 and 'Line not translated: custom service BetterChat_service.json was missing' in log(),
+          'service not set up: nothing is sent')
+
+    def configure(settings):
+        path.write_text(json.dumps(settings, ensure_ascii=False), encoding='utf-8')
+        lua.execute('fake.changed["alomare.better_chat.service"](2)')
+
+    configure({'about': 'x', 'base_url': 'https://api.example.com/v1/', 'api_key': 'sk-test-123', 'model': 'gpt-test',
+               'glossary': {'Bile Titan': 'Titã da Bile', 'eagle': 'Águia'}})
+    check('Custom service ready: api.example.com, model gpt-test\n' in log() and 'sk-test-123' not in log(),
+          'the service is read again when applied; the key is never logged')
+    line = 'Cuidado com o Bile Titan "agora" \\ ok'
+    w.add(OTHER, line.encode('utf-8'))
+    lua.execute('update(0.25)')
+    p = f.processes[1]
+    config = curl_config(p.stdin.data)
+    opts = {n: v for n, v, _ in config}
+    headers = [v for n, v, _ in config if n == 'header']
+    body = json.loads(opts['data-raw'])
+    system = body['messages'][0]['content']
+    check([c[0] for c in config] == ['silent', 'show-error', 'max-time', 'max-filesize', 'header', 'header',
+                                     'data-raw', 'write-out', 'url']
+          and all(c[2] == '' for c in config) and opts['max-time'] == '15'
+          and opts['url'] == 'https://api.example.com/v1/chat/completions'
+          and headers == ['Content-Type: application/json', 'Authorization: Bearer sk-test-123'],
+          'a POST to base_url/chat/completions, the key in a header, all in the config on standard input: %r'
+          % [c[0] for c in config])
+    check(body['model'] == 'gpt-test' and body['messages'][0]['role'] == 'system'
+          and body['messages'][1] == {'role': 'user', 'content': line} and set(body) == {'model', 'messages'},
+          'the body is valid JSON: the model, the prompt, the line as written (quotes and backslash); no temperature')
+    check('into English' in system and '{language}' not in system and 'Bile Titan = Titã da Bile' in system
+          and 'eagle' not in system, 'the prompt names the Inbound Language; only the glossary terms the line has')
+    f.reply(1, chat_completion('[pt] Watch out for the Bile Titan "now"'))
+    lua.execute('update(0.016)')
+    lines = calls(f, 'line ')
+    check(lines[-1:] == ['line 10979c0 %x %dULL [PT] Watch out for the Bile Titan "now"' % (CTX + CHAT, OTHER)]
+          and 'Translation 1 (0 ms, start 0.0 ms) pt -> en' in log(),
+          'the reply\'s language code becomes the label, as with Google: %r' % lines[-1:])
+
+    def answer(text, reply, status='200'):
+        w.add(OTHER, text)
+        lua.execute('update(0.25)')
+        f.reply(len(f.processes), reply, status)
+        lua.execute('update(0.016)')
+
+    answer(b'hello there friends', chat_completion('[en] hello there friends'))
+    check('Translation 2 not shown: already in en' in log(), 'a line already in the language is not shown')
+    answer(b'bonjour a tous', chat_completion('<think>French, easy.</think> "hello everyone"'))
+    check(calls(f, 'line ')[-1].endswith('ULL hello everyone'), 'reasoning and quotes left out; no code: no label')
+    answer(b'otra linea aqui', json.dumps({'error': {'message': 'Incorrect API key provided: sk-test-123 (otra linea)',
+                                                     'type': 'invalid_request_error', 'code': 'invalid_api_key'}}), '401')
+    check('failed: done, curl exit 0, HTTP 401, invalid_request_error\n' in log() and 'Incorrect' not in log()
+          and 'sk-test-123' not in log(), "an API error: its type logged, never its message")
+    answer(b'cuarta linea', chat_completion(''))
+    check('failed: empty translation' in log(), 'an empty reply is a failure')
+
+    # Outbound with the custom service: the Outbound Language in the prompt, and a longer wait (18 s).
+    lua.execute('fake.changed["alomare.better_chat.outbound_language"](3)')
+    chat.open()
+    chat.say(b'vamos a extraer')
+    p = f.processes[len(f.processes)]
+    body = json.loads(curl_options(p)['data-raw'])
+    check('into German' in body['messages'][0]['content'] and body['messages'][1]['content'] == 'vamos a extraer',
+          'outbound with the custom service: translated into the Outbound Language (Deutsch)')
+    lua.eval('function() fake.qpc = fake.qpc + 13000 end')()
+    lua.execute('update(0.016)')
+    check(not p.terminated, 'the custom service gets more than 12 s')
+    lua.eval('function() fake.qpc = fake.qpc + 6000 end')()
+    lua.execute('update(0.016)')
+    check(p.terminated and calls(f, 'send ')[-1].endswith(' vamos a extraer'), 'no answer in 18 s: sent as written')
+
+    # A service on this PC: http to localhost, no key, its own prompt.
+    configure({'base_url': 'http://localhost:11434/v1', 'model': 'qwen3:8b',
+               'prompt': 'Translate to {language}. Answer [code] translation.'})
+    check('Custom service ready: localhost:11434, model qwen3:8b, no key' in log(), 'a local service without a key')
+    answer(b'otra mas por favor', chat_completion('[es] one more please'))
+    p = f.processes[len(f.processes)]
+    config = curl_config(p.stdin.data)
+    body = json.loads({n: v for n, v, _ in config}['data-raw'])
+    check([v for n, v, _ in config if n == 'header'] == ['Content-Type: application/json']
+          and body['messages'][0]['content'] == 'Translate to English. Answer [code] translation.',
+          'no key: no Authorization header; the player\'s own prompt with the language')
+
+    # The game's names: into Chinese the English terms a line mentions get their official Chinese name (the longest
+    # term, not the one inside it; the player's glossary first); into English the Chinese ones get the English name.
+    configure({'base_url': 'https://api.example.com/v1', 'api_key': 'k', 'model': 'm', 'glossary': {'Hulk': 'Hulk'}})
+    lua.execute('fake.changed["alomare.better_chat.outbound_language"](13)')  # 简体中文 (OFF first)
+    chat.say(b'eagle 500kg bomb on the heavy devastators and that hulk, then extraction')
+    p = f.processes[len(f.processes)]
+    system = json.loads(curl_options(p)['data-raw'])['messages'][0]['content']
+    check('into Simplified Chinese' in system and 'Eagle 500kg Bomb = \u201c\u98de\u9e70\u201d500kg\u70b8\u5f39' in system
+          and 'Heavy Devastator = \u91cd\u578b\u8e42\u8e8f\u8005' in system and 'Devastator = \u8e42' not in system
+          and 'Hulk = Hulk' in system and 'Hulk = \u5de8' not in system and 'Extraction = \u64a4\u79bb' in system,
+          'into Chinese: the official names of the terms the line mentions: %r' % system.split('\n')[-1])
+    f.reply(len(f.processes), chat_completion('[en] x'))
+    lua.execute('update(0.016); update(0.016)')
+    lua.execute('fake.changed["alomare.better_chat.outbound_language"](1)')
+    answer('\u5c0f\u5fc3\u5410\u9178\u6cf0\u5766'.encode('utf-8'), chat_completion('[zh] watch out'))  # 小心吐酸泰坦
+    system = json.loads(curl_options(f.processes[len(f.processes)])['data-raw'])['messages'][0]['content']
+    check('\u5410\u9178\u6cf0\u5766 = Bile Titan' in system, 'into English: a Chinese name gets its English name')
+    t = lua.globals().BetterChat._test
+    check(t.mentions('two chargers here', 'charger') and t.mentions('charger!', 'charger') and t.mentions('the hulks', 'hulk')
+          and not t.mentions('a discharger', 'charger') and not t.mentions('hulking', 'hulk')
+          and not t.mentions('spearhead', 'spear'), 'English terms match as whole words (or their plural)')
+    found = t.game_terms('Call the Orbital Laser on the Bile Titan', 'zh-TW')
+    check([found[i]['from'] for i in (1, 2)] == ['Orbital Laser', 'Bile Titan']
+          and found[2]['to'] == '\u95ca\u6b65\u87f2', 'Traditional Chinese: the names the game shows its players')
+    check(len(t.game_terms('hola', 'de')) == 0, 'other languages: no game terms')
+
+    # Files that can't be used: the reason is logged and nothing is sent.
+    bad = [({'base_url': 'http://example.com/v1', 'model': 'm'}, 'base_url must start with https://'),
+           ({'base_url': 'https://api.example.com', 'model': ''}, 'model is empty'),
+           ({'base_url': 'https://api.example.com', 'model': 'm', 'prompt': 'Translate this.'}, 'prompt has no {language}'),
+           ({'base_url': 'https://api.example.com', 'model': 'm', 'api_key': 'a"b'}, 'api_key has quotes'),
+           ({'base_url': 'https://api.example.com', 'model': 'm', 'glossary': ['a']}, 'a glossary entry'),
+           ({'base_url': 'https://api.example.com', 'model': 'm', 'prompt': 'x' * 3000 + '{language}'}, 'prompt is longer')]
+    for settings, why in bad:
+        configure(settings)
+        check('Custom service off: ' + why in log(), 'not used: ' + why)
+    path.write_text('{"base_url": ', encoding='utf-8')
+    lua.execute('fake.changed["alomare.better_chat.service"](2)')
+    check('Custom service off: the file is not valid JSON' in log(), 'not valid JSON: not used')
+    n = len(f.processes)
+    answer(b'esto no se envia', '')
+    check(len(f.processes) == n, 'an unusable service sends nothing')
+    ok_urls = ['https://api.openai.com/v1', 'http://localhost:1234/v1', 'http://127.0.0.1:8080', 'http://[::1]:11434/v1']
+    bad_urls = ['http://192.168.0.2/v1', 'http://localhost.evil.com/v1', 'ftp://x', 'https://a b', 'https://x"y']
+    check(all(url_why(u) is False for u in ok_urls) and all(url_why(u) for u in bad_urls),
+          'https anywhere, http only to this PC: %r' % [(u, url_why(u)) for u in ok_urls + bad_urls])
+    jt = lua.globals().BetterChat._test.json_text
+    check(json.loads(jt('a"b\\c\n\td\x01')) == 'a"b\\c\n\td\x01', 'JSON text: quotes, backslashes, control characters')
 
 
 if __name__ == '__main__':

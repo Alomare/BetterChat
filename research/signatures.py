@@ -1,9 +1,9 @@
-"""Better Chat's code signatures (NOTES.md): checked against the game.dll dump and written into better_chat.lua
+"""Better Chat's code signatures (RESEARCH.md, "Signatures"): checked against the game.dll dump and written into better_chat.lua
 between the SIGNATURES markers, with the shared signature engine (tools/sigscan.lua) between the SIGNATURE ENGINE
 markers.
 
 Globals and offsets are read from the matched code (rip-relative operands, displacements); functions are found by
-their own first instructions, or through a call to them. Each feature needs only its own signatures (NOTES.md).
+their own first instructions, or through a call to them. Each feature needs only its own signatures.
 
 Usage (from the workspace root): python -B mods/BetterChat/research/signatures.py [--check]
   --check   only verify: every signature matches once and the script's blocks are current (exit 1 otherwise)
@@ -26,10 +26,11 @@ def function(name, start, end, optional=False):
 
 SPECS = [
     # The chat box's send (inside the HUD chat update 0x185fd10): the network context global, the chat inside it
-    # (context + chat), the UI sound function and the chat's own send sound.
+    # (context + chat), the call to the chat's send (chat, unused, text), the UI sound function and the chat's own
+    # send sound.
     {'name': 'chat_send', 'start': 0x186025d, 'end': 0x1860281,
-     'fields': {'context': (0x347cef0, 'rip'), 'chat': (0xc418, 'u32'), 'ui_sound': (0x1327f50, 'call'),
-                'send_sound': (0xe1ba68c0, 'u32')}},
+     'fields': {'context': (0x347cef0, 'rip'), 'chat': (0xc418, 'u32'), 'send_fn': (0x1097560, 'call'),
+                'ui_sound': (0x1327f50, 'call'), 'send_sound': (0xe1ba68c0, 'u32')}},
     # The chat's add-line (0x10979c0), every received and sent line goes through it: the local peer id in the
     # context, the history ring's first index and line count (64 lines), the line stride.
     {'name': 'chat_ring', 'start': 0x10979dc, 'end': 0x1097ac3,
@@ -81,6 +82,12 @@ SPECS = [
     # starts at its +0x1c.
     function('add_line', 0x10979c0, 0x10979dc, optional=True),
     function('set_scale', 0x1447ed0, 0x1447eec, optional=True),      # widget scale (+0x14, +0x18)
+    # Translate Outbound: the chat's send (chat, unused, text) found by its own first instructions (it must be the
+    # function chat_send calls), and inside it, after the text went to every peer, the call that adds it to the local
+    # chat: the context, the local peer id and the call to add-line (it must be add_line).
+    function('send_line', 0x1097560, 0x109758c, optional=True),
+    {'name': 'send_echo', 'start': 0x10977c4, 'end': 0x10977f3, 'optional': True,
+     'fields': {'context': (0x347cef0, 'rip'), 'local_peer': (0xb398, 'u32'), 'echo_call': (0x10979c0, 'call')}},
 ]
 
 

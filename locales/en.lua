@@ -8,14 +8,17 @@ return {
     strings = {
         -- The mod's name: its category button in Mod Options Menu (escape menu > MODS), shown in upper case.
         ['option.mod'] = 'Better Chat',
-        -- Two choices: the sound played when another player sends a chat message (or OFF), on the ship and in missions.
-        ['option.sound.label'] = 'Sound Alert in Ship',
-        ['option.sound.description'] = 'Plays one of the game\'s own sounds when another player sends a chat message while you are on the ship, at most once every 2 seconds. Pick a sound and apply to hear it.',
-        ['option.sound_mission.label'] = 'Sound Alert in Mission',
-        ['option.sound_mission.description'] = 'Plays one of the game\'s own sounds when another player sends a chat message while you are in a mission, at most once every 2 seconds. Pick a sound and apply to hear it.',
-        -- A toggle: the sound alert also plays for the player's own messages (to try the sounds alone).
-        ['option.sound_own.label'] = 'Sound Alert on My Messages',
-        ['option.sound_own.description'] = 'Also plays the sound alert for your own messages, so you can try the sounds alone.',
+        -- A slider: the text chat box's size in percent (100 = the game's size).
+        ['option.scale.label'] = 'Chat Size (%)',
+        ['option.scale.description'] = 'Makes the text chat and its text bigger or smaller. 100 keeps the game\'s size.',
+        -- A toggle: a sound plays when another player sends a chat message (the sounds are picked in the next two options).
+        ['option.alert.label'] = 'Sound Alert',
+        ['option.alert.description'] = 'Plays one of the game\'s own sounds when another player sends a chat message, at most once every 2 seconds. Pick the sounds for the ship and for missions below.',
+        -- Two choices: the sound played when another player sends a chat message, on the ship and in missions.
+        ['option.alert_ship.label'] = 'Sound Alert in Ship',
+        ['option.alert_ship.description'] = 'Plays one of the game\'s own sounds when another player sends a chat message while you are on the ship, at most once every 2 seconds. Pick a sound and apply to hear it.',
+        ['option.alert_mission.label'] = 'Sound Alert in Mission',
+        ['option.alert_mission.description'] = 'Plays one of the game\'s own sounds when another player sends a chat message while you are in a mission, at most once every 2 seconds. Pick a sound and apply to hear it.',
         -- The choices, shown in upper case: game sounds named by where the game plays them. The notice when a player joins.
         ['choice.joined'] = 'Player Joined',
         -- The notice when a player leaves.
@@ -40,31 +43,37 @@ return {
         ['choice.reinforce'] = 'Reinforce Request',
         -- The countdown tick played when a player leaves the mission area (missions only).
         ['choice.countdown'] = 'Countdown',
-        -- A slider: the text chat box's size in percent (100 = the game's size).
-        ['option.scale.label'] = 'Chat Size (%)',
-        ['option.scale.description'] = 'Makes the text chat and its text bigger or smaller. 100 keeps the game\'s size.',
-        -- A toggle: translates other players' chat messages into the language chosen in Translate To.
-        ['option.translate.label'] = 'Translate Chat',
-        ['option.translate.description'] = 'Sends each message from another player to Google Translate (translate.googleapis.com) and adds the translation to your chat when it is in another language than the one set in Translate To. Only you see it. Nothing is sent while this is off.',
-        -- A choice: the language translations are shown in.
-        ['option.translate_to.label'] = 'Translate To',
-        ['option.translate_to.description'] = 'The language translations are shown in. Messages already in it are not translated. Automatic: the language of your Windows regional format (Settings > Time & language > Language & region). Game Language: the game\'s Text Language.',
+        -- A choice: which service translates (both directions).
+        ['option.service.label'] = 'Translation Service',
+        ['option.service.description'] = 'Who translates, both ways. Google Translate: free, no account (translate.googleapis.com). Custom: an OpenAI-compatible service you set in BetterChat_service.json, next to the Logs folder in %LOCALAPPDATA%\\CowboyBingus\\Helldivers2 (created the first time). Only the message text is sent.',
+        -- The choices, shown in upper case: Google's free translation, and a service the player sets up.
+        ['choice.google'] = 'Google Translate',
+        ['choice.custom'] = 'Custom',
+        -- A choice: the language other players' messages (inbound) are translated into, or OFF (the game's own word,
+        -- shown in the game's language: write "off" as your game shows it in the description).
+        ['option.inbound_language.label'] = 'Inbound Language',
+        ['option.inbound_language.description'] = 'Translates other players\' messages into this language: each message goes to the Translation Service, and its translation is added to your chat when it is in another language. Only you see it. Automatic: the language of your Windows regional format. Game Language: the game\'s Text Language. OFF: nothing is sent.',
         -- The choices, shown in upper case: the language of Windows' regional format, and the game's Text Language setting.
         ['choice.automatic'] = 'Automatic',
         ['choice.game'] = 'Game Language',
-        -- A toggle: also translates the player's own messages.
-        ['option.translate_own.label'] = 'Translate My Messages',
-        ['option.translate_own.description'] = 'Also translates your own messages, so you can try translation alone. Only you see the translations.',
+        -- A choice: the language the player's own messages (outbound) are sent in, or OFF; the squad sees only the translation.
+        ['option.outbound_language.label'] = 'Outbound Language',
+        ['option.outbound_language.description'] = 'Sends your messages translated into this language: when you press Enter, your message goes to the Translation Service first and the squad sees only the translation, about a second later. If translation fails or your message is already in that language, it goes as you wrote it. OFF: nothing is sent.',
+        -- A toggle: inbound translation also translates the player's own messages (shown only to them, to test it alone).
+        ['option.translate_own.label'] = 'Inbound Debug',
+        ['option.translate_own.description'] = 'Inbound Language also translates your own messages, so you can test it alone. Only you see these translations.',
     },
     -- Mod Options Menu's limits, in characters.
     limits = {
         ['option.mod'] = 40,
-        ['option.sound.label'] = 64,
-        ['option.sound.description'] = 400,
-        ['option.sound_mission.label'] = 64,
-        ['option.sound_mission.description'] = 400,
-        ['option.sound_own.label'] = 64,
-        ['option.sound_own.description'] = 400,
+        ['option.scale.label'] = 64,
+        ['option.scale.description'] = 400,
+        ['option.alert.label'] = 64,
+        ['option.alert.description'] = 400,
+        ['option.alert_ship.label'] = 64,
+        ['option.alert_ship.description'] = 400,
+        ['option.alert_mission.label'] = 64,
+        ['option.alert_mission.description'] = 400,
         ['choice.joined'] = 48,
         ['choice.left'] = 48,
         ['choice.tab'] = 48,
@@ -77,14 +86,16 @@ return {
         ['choice.dialog'] = 48,
         ['choice.reinforce'] = 48,
         ['choice.countdown'] = 48,
-        ['option.scale.label'] = 64,
-        ['option.scale.description'] = 400,
-        ['option.translate.label'] = 64,
-        ['option.translate.description'] = 400,
-        ['option.translate_to.label'] = 64,
-        ['option.translate_to.description'] = 400,
+        ['option.service.label'] = 64,
+        ['option.service.description'] = 400,
+        ['choice.google'] = 48,
+        ['choice.custom'] = 48,
+        ['option.inbound_language.label'] = 64,
+        ['option.inbound_language.description'] = 400,
         ['choice.automatic'] = 48,
         ['choice.game'] = 48,
+        ['option.outbound_language.label'] = 64,
+        ['option.outbound_language.description'] = 400,
         ['option.translate_own.label'] = 64,
         ['option.translate_own.description'] = 400,
     },
