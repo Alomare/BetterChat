@@ -4,7 +4,7 @@ Releases are named "Better Chat V&lt;n&gt;" (tag `v<n>`). Each section is that r
 
 ## V6 (2026-10-19)
 
-**Your settings start over:** the options were regrouped and most have new ids, so this version starts with its defaults (Sound Alert on, Player Joined on the ship, Action Wheel in missions, Inbound Language Automatic, Outbound Language OFF). Set them again in escape menu > MODS > Better Chat.
+**Your translation settings start over:** the translation options were regrouped and have new ids, so they start with their defaults (Inbound Language Automatic, Outbound Language OFF). Your sound choices and chat size are kept. Set them in escape menu > MODS > Better Chat.
 
 ### Translation fixed (still highly experimental)
 
@@ -26,8 +26,8 @@ Releases are named "Better Chat V&lt;n&gt;" (tag `v<n>`). Each section is that r
 
 ### Settings reworked
 
-- The settings are grouped, with a space between groups: Chat Size | Sound Alert, Sound Alert in Ship, Sound Alert in Mission | Translation Service, Inbound Language, Outbound Language | Inbound Debug. (The spaces need Mod Options Menu 1.2 or newer.)
-- **Sound Alert** is a new on/off switch for the sounds; the two sound choices no longer have OFF. Sound Alert in Mission now starts at Action Wheel, which is easier to hear in combat.
+- The settings are grouped, with a space between groups: Chat Size | Sound Alert in Ship, Sound Alert in Mission | Translation Service, Inbound Language, Outbound Language | Inbound Debug. (The spaces need Mod Options Menu 1.2 or newer.)
+- On a new install, Sound Alert in Mission starts at Action Wheel, which is easier to hear in combat. Both sound settings still offer OFF.
 - **Inbound Language** replaces Translate Chat and Translate To: OFF, Automatic (your Windows regional format's language), Game Language, or one of the game's languages.
 - **Inbound Debug** replaces Translate My Messages: your own messages are translated too (only you see it), to try translation alone.
 - Removed Sound Alert on My Messages.

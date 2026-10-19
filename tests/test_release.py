@@ -385,33 +385,30 @@ def run():
     lua2 = new_lua(logdir2)
     w2 = World(lua2)
     f2 = w2.f
-    lua2.execute('ModOptionsMenu = fake.menu; fake.values["alomare.better_chat.alert"] = false; '
+    lua2.execute('ModOptionsMenu = fake.menu; fake.values["alomare.better_chat.sound"] = 1; '
                  'fake.values["alomare.better_chat.inbound_language"] = 1')
     lua2.execute(SOURCE)
     lua2.execute('for i = 1, 5 do update(0.016) end')
     log2 = lambda: (logdir2 / 'BetterChat.log').read_text(encoding='utf-8')
     order = f2.order.split()
     s = f2.specs
-    menu = ('scale', 'alert', 'alert_ship', 'alert_mission', 'service', 'inbound_language', 'outbound_language',
-            'translate_own')
+    menu = ('scale', 'sound', 'sound_mission', 'service', 'inbound_language', 'outbound_language', 'translate_own')
     check(order == ['alomare.better_chat.' + n for n in menu], 'options registered in menu order (no paste option): %r' % order)
     gaps = [n for n in menu if s['alomare.better_chat.' + n].gap]
-    check(gaps == ['alert', 'service', 'translate_own'], 'a gap above Sound Alert, Translation Service and Inbound Debug: %r' % gaps)
-    alert = s['alomare.better_chat.alert']
-    check(alert.type == 'toggle' and alert.default is True and alert.label() == 'Sound Alert', 'Sound Alert: a toggle, on by default')
-    sound = s['alomare.better_chat.alert_ship']
-    names = [sound.choices[i]() for i in range(1, 11)]
-    check(sound.type == 'choice' and len(sound.choices) == 10
+    check(gaps == ['sound', 'service', 'translate_own'], 'a gap above the sounds, Translation Service and Inbound Debug: %r' % gaps)
+    sound = s['alomare.better_chat.sound']
+    names = [sound.choices[i]() for i in range(2, 12)]
+    check(sound.type == 'choice' and sound.choices[1] == 'OFF' and len(sound.choices) == 11
           and names == ['Player Joined', 'Player Left', 'Menu Tab', 'Menu Subtab', 'Option Click', 'Menu Confirm',
                         'Menu Back', 'Action Wheel', 'Item Purchase', 'Confirmation Dialog']
-          and sound.default == 1 and sound.label() == 'Sound Alert in Ship' and sound.mod() == 'Better Chat'
-          and sound.mod_id == 'alomare.better_chat', 'ship sound: the game sounds (no OFF), Player Joined by default, texts as functions')
-    mission = s['alomare.better_chat.alert_mission']
-    check(mission.type == 'choice' and len(mission.choices) == 12 and mission.default == 8
-          and [mission.choices[i]() for i in range(1, 11)] == names
-          and [mission.choices[i]() for i in (11, 12)] == ['Reinforce Request', 'Countdown']
+          and sound.default == 2 and sound.label() == 'Sound Alert in Ship' and sound.mod() == 'Better Chat'
+          and sound.mod_id == 'alomare.better_chat', 'ship sound: OFF + the game sounds, Player Joined by default, texts as functions')
+    mission = s['alomare.better_chat.sound_mission']
+    check(mission.type == 'choice' and mission.choices[1] == 'OFF' and len(mission.choices) == 13 and mission.default == 9
+          and [mission.choices[i]() for i in range(2, 12)] == names
+          and [mission.choices[i]() for i in (12, 13)] == ['Reinforce Request', 'Countdown']
           and mission.label() == 'Sound Alert in Mission',
-          'mission sound: the same sounds, then the two only the mission bank has; Action Wheel by default')
+          'mission sound: OFF, the same sounds, then the two only the mission bank has; Action Wheel by default')
     debug = s['alomare.better_chat.translate_own']
     check(debug.type == 'toggle' and debug.default is False and debug.label() == 'Inbound Debug', 'Inbound Debug: off by default')
     sc = s['alomare.better_chat.scale']
@@ -419,23 +416,21 @@ def run():
           and not sc.gap and sc.label() == 'Chat Size (%)', 'size slider: 50-200% in steps of 5, 100 by default')
     w2.add(OTHER)
     lua2.execute('update(0.25)')
-    check(len(f2.calls) == 0 and '1 new chat line(s), 1 from other players' in log2(), 'Sound Alert off: no sound')
-    lua2.execute('fake.changed["alomare.better_chat.alert"](true)')
-    check(len(f2.calls) == 0, 'turning Sound Alert on plays nothing')
-    for choice, want, what in ((3, TAB, 'menu tab'), (4, SUBTAB, 'menu subtab'), (6, 0x7a69c309, 'menu confirm'),
-                               (7, 0x96c8c848, 'menu back'), (8, 0x22200946, 'action wheel'),
-                               (9, 0xa1af099e, 'item purchase'), (10, 0xd8fc9d33, 'confirmation dialog'),
-                               (5, OPTION, 'option click')):
+    check(len(f2.calls) == 0 and '1 new chat line(s), 1 from other players' in log2(), 'sound OFF: no sound')
+    for choice, want, what in ((4, TAB, 'menu tab'), (5, SUBTAB, 'menu subtab'), (7, 0x7a69c309, 'menu confirm'),
+                               (8, 0x96c8c848, 'menu back'), (9, 0x22200946, 'action wheel'),
+                               (10, 0xa1af099e, 'item purchase'), (11, 0xd8fc9d33, 'confirmation dialog'),
+                               (6, OPTION, 'option click')):
         f2.calls = lua2.table()
-        lua2.execute('fake.changed["alomare.better_chat.alert_ship"](%d)' % choice)
+        lua2.execute('fake.changed["alomare.better_chat.sound"](%d)' % choice)
         check(list(f2.calls.values()) == ['sound 1327f50 %x' % want], 'picking %s plays it once (preview)' % what)
-    for choice, want, what in ((11, 0x4a300afb, 'reinforce request'), (12, 0x9da28dab, 'countdown')):
+    for choice, want, what in ((12, 0x4a300afb, 'reinforce request'), (13, 0x9da28dab, 'countdown')):
         f2.calls = lua2.table()
-        lua2.execute('fake.changed["alomare.better_chat.alert_mission"](%d)' % choice)
+        lua2.execute('fake.changed["alomare.better_chat.sound_mission"](%d)' % choice)
         check(list(f2.calls.values()) == ['sound 1327f50 %x' % want], 'picking %s for missions plays it once (preview)' % what)
-    lua2.execute('fake.changed["alomare.better_chat.alert_ship"](11)')
-    check('Option alert_ship = 1' in log2(), 'the ship option has no mission-only sound: index 11 falls back to the default')
-    lua2.execute('fake.changed["alomare.better_chat.alert_ship"](5)')
+    lua2.execute('fake.changed["alomare.better_chat.sound"](12)')
+    check('Option sound = 2' in log2(), 'the ship option has no mission-only sound: index 12 falls back to the default')
+    lua2.execute('fake.changed["alomare.better_chat.sound"](6)')
     lua2.execute('update(3.0)')
     f2.calls = lua2.table()
     w2.add(OTHER)
@@ -449,13 +444,17 @@ def run():
           'inside them: sound 12.0, curl start 0.0, log 0.0 in 3 lines)' in log2(),
           'a slow sound call is logged as a slow update with what took the time')
     # In a mission the mission's choice plays, not the ship's.
-    lua2.execute('fake.changed["alomare.better_chat.alert_mission"](6); update(3.0)')
+    lua2.execute('fake.changed["alomare.better_chat.sound_mission"](7); update(3.0)')
     w2.mode(4)
     w2.push_all()
     f2.calls = lua2.table()
     w2.add(OTHER)
     lua2.execute('update(0.25)')
     check(list(f2.calls.values()) == ['sound 1327f50 %x' % 0x7a69c309], "in a mission: the mission option's sound")
+    lua2.execute('fake.changed["alomare.better_chat.sound_mission"](1); update(3.0)')
+    w2.add(OTHER)
+    lua2.execute('update(0.25)')
+    check(len(f2.calls) == 1, 'mission sound OFF: no sound in a mission')
     w2.mode(3)
     w2.push_all()
     lua2.execute('update(3.0)')
@@ -469,11 +468,6 @@ def run():
     w2.add(OWN)
     lua2.execute('update(0.25)')
     check(len(f2.calls) == 0 and '1 new chat line(s), 0 from other players, 1 from you' in log2(), 'your own line: no sound')
-    # Sound Alert off again: quiet, whatever the sounds picked.
-    lua2.execute('fake.changed["alomare.better_chat.alert"](false); update(3.0)')
-    w2.add(OTHER)
-    lua2.execute('update(0.25)')
-    check(len(f2.calls) == 0, 'Sound Alert turned off: no sound')
     # Size: scaled from the widget's own scale once it is laid out.
     f2.calls = lua2.table()
     lua2.execute('fake.changed["alomare.better_chat.scale"](150); update(0.016)')
@@ -496,8 +490,8 @@ def run():
     lua3.execute('fake.menu.version = 1; ModOptionsMenu = fake.menu')
     lua3.execute(SOURCE)
     lua3.execute('update(0.016)')
-    s3 = lua3.globals().fake.specs['alomare.better_chat.alert_ship']
-    check(s3.label == 'Sound Alert in Ship' and s3.choices[3] == 'Menu Tab', 'v1.0: texts as strings')
+    s3 = lua3.globals().fake.specs['alomare.better_chat.sound']
+    check(s3.label == 'Sound Alert in Ship' and s3.choices[4] == 'Menu Tab', 'v1.0: texts as strings')
 
     # --- set_scale moved out of reach: only the size is off.
     logdir4 = Path(tempfile.mkdtemp())
@@ -516,7 +510,7 @@ def run():
     lua6 = new_lua(logdir6)
     w6 = World(lua6)
     w6.f.patch(0x17ae42c, b'\xcc' * 4)
-    lua6.execute('ModOptionsMenu = fake.menu; fake.values["alomare.better_chat.alert_ship"] = 3')
+    lua6.execute('ModOptionsMenu = fake.menu; fake.values["alomare.better_chat.sound"] = 4')
     lua6.execute(SOURCE)
     lua6.execute('for i = 1, 80 do update(0.016) end')
     log6 = (logdir6 / 'BetterChat.log').read_text(encoding='utf-8')
@@ -781,7 +775,7 @@ def run_translation(check):
     lua = new_lua(logdir)
     w = World(lua)
     f = w.f
-    lua.execute('ModOptionsMenu = fake.menu; fake.values["alomare.better_chat.alert"] = false; '
+    lua.execute('ModOptionsMenu = fake.menu; fake.values["alomare.better_chat.sound"] = 1; '
                 'fake.values["alomare.better_chat.inbound_language"] = 1')
     lua.execute(SOURCE)
     lua.execute('for i = 1, 5 do update(0.016) end')
@@ -1087,7 +1081,7 @@ def run_outbound(check):
     f = w.f
     chat = Chat(lua, w)
     f.on_send = lambda text: w.add(OWN, text.encode('utf-8'))
-    lua.execute('ModOptionsMenu = fake.menu; fake.values["alomare.better_chat.alert"] = false; '
+    lua.execute('ModOptionsMenu = fake.menu; fake.values["alomare.better_chat.sound"] = 1; '
                 'fake.values["alomare.better_chat.inbound_language"] = 1')
     lua.execute(SOURCE)
     lua.execute('for i = 1, 5 do update(0.016) end')
@@ -1273,7 +1267,7 @@ def run_service(check):
     f = w.f
     chat = Chat(lua, w)
     f.on_send = lambda text: w.add(OWN, text.encode('utf-8'))
-    lua.execute('ModOptionsMenu = fake.menu; fake.values["alomare.better_chat.alert"] = false; '
+    lua.execute('ModOptionsMenu = fake.menu; fake.values["alomare.better_chat.sound"] = 1; '
                 'fake.values["alomare.better_chat.service"] = 2; fake.values["alomare.better_chat.inbound_language"] = 4')
     lua.execute(SOURCE)
     lua.execute('for i = 1, 5 do update(0.016) end')

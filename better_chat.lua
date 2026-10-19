@@ -347,6 +347,7 @@ local MODE_MISSION = 4         -- game mode: 3 ship, 4 mission
 -- plays nothing. The sounds marked `mission_only` are only in the mission UI sound bank, so they would be silent on
 -- the ship: they come last, and the ship option lists the ones before them.
 local SOUNDS = {
+    {},                        -- OFF
     {key = 'choice.joined', sig = 'join_feed', ship = 'join_ship', mission = 'join_mission'},
     {key = 'choice.left', sig = 'leave_feed', ship = 'leave_ship', mission = 'leave_mission'},
     {key = 'choice.tab', sig = 'tab_button', ship = 'tab_click', mission = 'tab_click'},
@@ -364,10 +365,10 @@ local SOUNDS = {
 }
 local SHIP_SOUNDS = #SOUNDS    -- the choices of the ship option: SOUNDS[1 .. SHIP_SOUNDS]
 while SOUNDS[SHIP_SOUNDS].mission_only do SHIP_SOUNDS = SHIP_SOUNDS - 1 end
--- Sound Alert in Ship: Player Joined; in Mission: Action Wheel (SOUNDS indexes).
+-- Sound Alert in Ship: Player Joined; in Mission: Action Wheel (SOUNDS indexes, OFF first).
 -- Inbound Language: Automatic (OFF first); Outbound Language: OFF. translate, translate_to, outbound and outbound_to
 -- follow from them (set_option).
-local DEFAULTS = {scale = 100, alert = true, alert_ship = 1, alert_mission = 8, service = 1, inbound_language = 2,
+local DEFAULTS = {scale = 100, sound = 2, sound_mission = 9, service = 1, inbound_language = 2,
                   outbound_language = 1, translate_own = false, translate = true, translate_to = 1, outbound = false,
                   outbound_to = 1}
 local SCALE = {min = 50, max = 200, step = 5}
@@ -868,7 +869,8 @@ local function finish_resolution()
         list[#list + 1] = name .. ' ' .. (features[name] == true and 'ready' or ('off (' .. features[name] .. ')'))
     end
     local sounds = {}
-    for _, sound in ipairs(SOUNDS) do
+    for i = 2, #SOUNDS do
+        local sound = SOUNDS[i]
         local label = sound.key:sub(8)
         if sound.id then
             sounds[#sounds + 1] = string.format('%s 0x%08x', label, sound.id)
@@ -927,9 +929,8 @@ end
 
 local SETTERS = {
     scale = function(v) return clamp(v, SCALE, DEFAULTS.scale) end,
-    alert = function(v) return v == true end,
-    alert_ship = sound_choice(SHIP_SOUNDS, DEFAULTS.alert_ship),
-    alert_mission = sound_choice(#SOUNDS, DEFAULTS.alert_mission),
+    sound = sound_choice(SHIP_SOUNDS, DEFAULTS.sound),
+    sound_mission = sound_choice(#SOUNDS, DEFAULTS.sound_mission),
     translate = function(v) return v == true end,
     translate_to = function(v) v = math.floor(tonumber(v) or 1); return (v >= 1 and v <= #TRANSLATE_TO) and v or 1 end,
     translate_own = function(v) return v == true end,
@@ -971,7 +972,7 @@ local function set_option(name, value, applied)
     end
     if name == 'outbound' and changed and not v then flush_outbound('Outbound Language turned OFF') end
     -- A sound picked in the menu plays once, so it can be heard.
-    if (name == 'alert_ship' or name == 'alert_mission') and applied and M.ready then play(v, 'preview') end
+    if (name == 'sound' or name == 'sound_mission') and applied and M.ready then play(v, 'preview') end
 end
 
 local function connect_options()
@@ -981,20 +982,19 @@ local function connect_options()
     local function text(key, limit) return host_text(menu, 2, key, limit) end
     local mod = text('option.mod', 40)
     local choices, ship_choices = {}, {}
-    for i, sound in ipairs(SOUNDS) do choices[i] = text(sound.key, 48) end
+    for i, sound in ipairs(SOUNDS) do choices[i] = i == 1 and 'OFF' or text(sound.key, 48) end
     for i = 1, SHIP_SOUNDS do ship_choices[i] = choices[i] end
     local languages, outbound_languages, services = {'OFF'}, {'OFF'}, {}
     for _, choice in ipairs(TRANSLATE_TO) do languages[#languages + 1] = choice.name or text(choice.key, 48) end
     for _, choice in ipairs(OUTBOUND_TO) do outbound_languages[#outbound_languages + 1] = choice.name end
     for i, service in ipairs(SERVICES) do services[i] = text(service.key, 48) end
-    -- The sound choices lost their OFF (Sound Alert turns them off) and the language choices gained one (replacing the
-    -- translation toggles), so all four have new ids: V5's saved values would point one choice off. gap: space above
-    -- the row (MOM v1.2).
+    -- The language choices have OFF first (replacing V5's translation toggles), so they have ids of their own: V5's
+    -- saved values would point one choice off. The sounds keep V5's ids and choices (OFF first). gap: space above the
+    -- row (MOM v1.2).
     local specs = {
         {'scale', {type = 'slider', min = SCALE.min, max = SCALE.max, step = SCALE.step, default = DEFAULTS.scale}},
-        {'alert', {type = 'toggle', default = DEFAULTS.alert, gap = true}},
-        {'alert_ship', {type = 'choice', choices = ship_choices, default = DEFAULTS.alert_ship}},
-        {'alert_mission', {type = 'choice', choices = choices, default = DEFAULTS.alert_mission}},
+        {'sound', {type = 'choice', choices = ship_choices, default = DEFAULTS.sound, gap = true}},
+        {'sound_mission', {type = 'choice', choices = choices, default = DEFAULTS.sound_mission}},
         {'service', {type = 'choice', choices = services, default = DEFAULTS.service, gap = true}},
         {'inbound_language', {type = 'choice', choices = languages, default = DEFAULTS.inbound_language}},
         {'outbound_language', {type = 'choice', choices = outbound_languages, default = DEFAULTS.outbound_language}},
@@ -1775,8 +1775,8 @@ local clock, last_sound, last_check = 0, -math.huge, -math.huge
 local function alert(others, mine, total)
     note(string.format('%d new chat line(s), %d from other players, %d from you', total, others, mine))
     -- The ship's choice everywhere but in missions.
-    local choice = game_mode() == MODE_MISSION and options.alert_mission or options.alert_ship
-    if others == 0 or not options.alert then return end
+    local choice = game_mode() == MODE_MISSION and options.sound_mission or options.sound
+    if others == 0 or choice == 1 then return end
     if clock - last_sound >= COOLDOWN then
         if play(choice, 'new message') then last_sound = clock end
     else

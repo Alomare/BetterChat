@@ -11,14 +11,11 @@ return {
         -- A slider: the text chat box's size in percent (100 = the game's size).
         ['option.scale.label'] = 'Chat Size (%)',
         ['option.scale.description'] = 'Makes the text chat and its text bigger or smaller. 100 keeps the game\'s size.',
-        -- A toggle: a sound plays when another player sends a chat message (the sounds are picked in the next two options).
-        ['option.alert.label'] = 'Sound Alert',
-        ['option.alert.description'] = 'Plays one of the game\'s own sounds when another player sends a chat message, at most once every 2 seconds. Pick the sounds for the ship and for missions below.',
-        -- Two choices: the sound played when another player sends a chat message, on the ship and in missions.
-        ['option.alert_ship.label'] = 'Sound Alert in Ship',
-        ['option.alert_ship.description'] = 'Plays one of the game\'s own sounds when another player sends a chat message while you are on the ship, at most once every 2 seconds. Pick a sound and apply to hear it.',
-        ['option.alert_mission.label'] = 'Sound Alert in Mission',
-        ['option.alert_mission.description'] = 'Plays one of the game\'s own sounds when another player sends a chat message while you are in a mission, at most once every 2 seconds. Pick a sound and apply to hear it.',
+        -- Two choices: the sound played when another player sends a chat message (or OFF), on the ship and in missions.
+        ['option.sound.label'] = 'Sound Alert in Ship',
+        ['option.sound.description'] = 'Plays one of the game\'s own sounds when another player sends a chat message while you are on the ship, at most once every 2 seconds. Pick a sound and apply to hear it.',
+        ['option.sound_mission.label'] = 'Sound Alert in Mission',
+        ['option.sound_mission.description'] = 'Plays one of the game\'s own sounds when another player sends a chat message while you are in a mission, at most once every 2 seconds. Pick a sound and apply to hear it.',
         -- The choices, shown in upper case: game sounds named by where the game plays them. The notice when a player joins.
         ['choice.joined'] = 'Player Joined',
         -- The notice when a player leaves.
@@ -68,12 +65,10 @@ return {
         ['option.mod'] = 40,
         ['option.scale.label'] = 64,
         ['option.scale.description'] = 400,
-        ['option.alert.label'] = 64,
-        ['option.alert.description'] = 400,
-        ['option.alert_ship.label'] = 64,
-        ['option.alert_ship.description'] = 400,
-        ['option.alert_mission.label'] = 64,
-        ['option.alert_mission.description'] = 400,
+        ['option.sound.label'] = 64,
+        ['option.sound.description'] = 400,
+        ['option.sound_mission.label'] = 64,
+        ['option.sound_mission.description'] = 400,
         ['choice.joined'] = 48,
         ['choice.left'] = 48,
         ['choice.tab'] = 48,
