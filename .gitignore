@@ -3,3 +3,9 @@ build/
 nexus_description.txt
 todo.txt
 __pycache__/
+# Live test checklists (local only)
+TESTING.md
+# One-off research builds
+research/recon*.lua
+# Internal notes and development history
+dev/
