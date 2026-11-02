@@ -127,4 +127,4 @@ Never paste the game's decompiled code or files from its archives: describe what
 
 ## License of contributions
 
-This mod is licensed under the [GNU General Public License v3.0 or later](LICENSE). By contributing, you agree that your contribution is licensed the same way. Contributors are credited in the release notes, and in the README for larger contributions.
+This mod is licensed under the [MIT License](LICENSE). By contributing, you agree that your contribution is licensed the same way. Contributors are credited in the release notes, and in the README for larger contributions.

@@ -111,4 +111,4 @@ How it works in the game's code: [RESEARCH.md](RESEARCH.md). Contributing: [CONT
 
 ## License
 
-Copyright (C) 2026 Alomare. Licensed under the [GNU General Public License v3.0 or later](LICENSE): you're free to use, study, change and share this mod, and anything you distribute that includes or changes its code must use the same license and come with its source. `src/bingus_text.lua` is CowboyBingus's, under the Zero-Clause BSD license.
+Copyright (c) 2026 Alomare. Licensed under the [MIT License](LICENSE). `src/bingus_text.lua` is CowboyBingus's, under the Zero-Clause BSD license.

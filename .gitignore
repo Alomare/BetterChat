@@ -1,11 +1,3 @@
-# Release builds and the Nexus page text
-build/
-nexus_description.txt
-todo.txt
+# Private or generated: notes, test checklists, builds, Nexus texts, one-off research tools
+internal/
 __pycache__/
-# Live test checklists (local only)
-TESTING.md
-# One-off research builds
-research/recon*.lua
-# Internal notes and development history
-dev/
